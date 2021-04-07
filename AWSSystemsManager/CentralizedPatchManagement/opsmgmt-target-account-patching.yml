@@ -1,0 +1,1263 @@
+
+AWSTemplateFormatVersion: 2010-09-09
+Description: |
+
+Parameters:
+  ExecutionLogsS3Bucket:
+    Type : 'String'
+    Description: 'Name of the S3 bucket that lives in the central account.'
+    Default: ''
+  InventoryExecutionLogsS3BucketPrefix:
+    Type : 'String'
+    Description: 'Name of the prefix to use in the central account S3 bucket for inventory execution data.'
+    Default: 'inventory-execution-logs'
+  PatchingExecutionLogsS3BucketPrefix:
+    Type : 'String'
+    Description: 'Name of the prefix to use in the central account S3 bucket for inventory execution data.'
+    Default: 'patching-execution-logs'    
+  PatchingOperation:
+    Type: String
+    AllowedValues:
+      - Scan
+      - Install
+    Default: Install
+    Description: (Required) The update or configuration to perform on the instance. The system checks if patches specified in the patch baseline are installed on the instance. The install operation installs patches missing from the baseline.
+  PatchingRebootOption:
+    Type: String
+    AllowedValues:
+      - RebootIfNeeded
+      - NoReboot
+    Default: RebootIfNeeded
+    Description: 'Reboot behavior after a patch Install operation. If you choose NoReboot and patches are installed, the instance is marked as non-compliant until a subsequent reboot and scan.'
+  PatchingInstallOverrideList:
+    Type: String
+    Default: ''
+    Description: (Optional) List of patches to override.
+  PatchingTimeoutSeconds:
+    Type: Number
+    Default: 7200
+    Description: (Optional) The maximum duration in seconds of the patching operation before timing out. Default is 2 hours.
+  PatchSchedule:
+    Type: String
+    Default: cron(59 11 ? * SAT *)
+  GatherInventory:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: (Optional) Gather a software inventory of the system after patching. Default is false.              
+  StartInstances:
+    Type: String
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Default: 'false'
+    Description: '(Optional) If true, the instance will be started prior to patching if it is stopped. If the instance was stopped prior to patching, it will be stopped again after patching is complete. Default is false.'
+  AutoAttachInstanceProfile:
+    Type: String
+    AllowedValues:
+      - 'Enabled'
+      - 'Disabled'
+    Description: When enabled, the patching automation will temporarily attach an instance profile or IAM policies to the existing instance profile role that are needed by Systems Manager to execute commands. It is recommended/preferred that you use SSM QuickSetup or self-manage instance profiles.   
+    Default: Enabled
+Conditions:
+  AutoAttachInstanceProfile: !Equals [!Ref AutoAttachInstanceProfile, 'Enabled']
+
+Resources:
+  #-------------------------------------------------
+  # Patch Baselines for each operating system. These will be used as the defaults for the account/region. They can be customized
+  #-------------------------------------------------
+  UbuntuPatchBaseline:
+    Type: 'AWS::SSM::PatchBaseline'
+    Properties:
+      ApprovalRules:
+        PatchRules:
+          - PatchFilterGroup:
+              PatchFilters:
+                - Values:
+                    - '*'
+                  Key: SECTION
+            ApproveAfterDays: 0
+      Name: DefaultUbuntuPatchBaseline
+      OperatingSystem: UBUNTU
+
+  AmazonLinux2PatchBaseline:
+    Type: 'AWS::SSM::PatchBaseline'
+    Properties:
+      ApprovedPatchesEnableNonSecurity: true
+      Name: DefaultAmazonLinux2PatchBaseline
+      ApprovalRules:
+        PatchRules:
+          - EnableNonSecurity: false
+            ApproveAfterDays: 0
+            PatchFilterGroup:
+              PatchFilters:
+                - Values:
+                    - Security
+                  Key: CLASSIFICATION
+      OperatingSystem: AMAZON_LINUX_2
+      ApprovedPatches:
+        - kernel*  
+
+  OraclePatchBaseline:
+    Type: 'AWS::SSM::PatchBaseline'
+    Properties:
+      ApprovedPatchesEnableNonSecurity: true
+      Name: DefaultOraclePatchBaseline
+      ApprovalRules:
+        PatchRules:
+          - EnableNonSecurity: false
+            ApproveAfterDays: 0
+            PatchFilterGroup:
+              PatchFilters:
+                - Values:
+                    - Security
+                  Key: CLASSIFICATION
+      OperatingSystem: ORACLE_LINUX
+      ApprovedPatches:
+        - kernel*
+  
+  CentosPatchBaseline:
+    Type: 'AWS::SSM::PatchBaseline'
+    Properties:
+      ApprovalRules:
+        PatchRules:
+          - EnableNonSecurity: true
+            ApproveAfterDays: 0
+            PatchFilterGroup:
+              PatchFilters:
+                - Values:
+                    - '*'
+                  Key: CLASSIFICATION
+      Name: DefaultCentosPatchBaseline
+      OperatingSystem: CENTOS
+      
+  DebianPatchBaseline:
+    Type: 'AWS::SSM::PatchBaseline'
+    Properties:
+      ApprovalRules:
+        PatchRules:
+          - PatchFilterGroup:
+              PatchFilters:
+                - Values:
+                    - '*'
+                  Key: SECTION
+            ApproveAfterDays: 0
+      Name: DefaultDebianPatchBaseline
+      OperatingSystem: DEBIAN
+
+  RedhatPatchBaseline:
+    Type: 'AWS::SSM::PatchBaseline'
+    Properties:
+      ApprovedPatchesEnableNonSecurity: true
+      Name: DefaultRedhatPatchBaseline
+      ApprovalRules:
+        PatchRules:
+          - EnableNonSecurity: false
+            ApproveAfterDays: 0
+            PatchFilterGroup:
+              PatchFilters:
+                - Values:
+                    - Security
+                  Key: CLASSIFICATION
+      OperatingSystem: REDHAT_ENTERPRISE_LINUX
+      ApprovedPatches:
+        - kernel*
+
+
+
+  SusePatchBaseline:
+    Type: 'AWS::SSM::PatchBaseline'
+    Properties:
+      ApprovalRules:
+        PatchRules:
+          - PatchFilterGroup:
+              PatchFilters:
+                - Values:
+                    - Security
+                  Key: CLASSIFICATION
+            ApproveAfterDays: 0
+      Name: DefaultSusePatchBaseline
+      ApprovedPatches:
+        - kernel*
+      OperatingSystem: SUSE
+
+  AmazonLinuxPatchBaseline:
+    Type: 'AWS::SSM::PatchBaseline'
+    Properties:
+      ApprovedPatchesEnableNonSecurity: true
+      Name: DefaultAmazonLinuxPatchBaseline
+      ApprovalRules:
+        PatchRules:
+          - EnableNonSecurity: false
+            ApproveAfterDays: 0
+            PatchFilterGroup:
+              PatchFilters:
+                - Values:
+                    - Security
+                  Key: CLASSIFICATION
+      OperatingSystem: AMAZON_LINUX
+      ApprovedPatches:
+        - kernel*
+
+  WindowsPatchBaseline:
+    Type: 'AWS::SSM::PatchBaseline'
+    Properties:
+      ApprovalRules:
+        PatchRules:
+          - PatchFilterGroup:
+              PatchFilters:
+                - Values:
+                    - SecurityUpdates
+                    - CriticalUpdates
+                  Key: CLASSIFICATION
+            ApproveAfterDays: 0
+      Name: DefaultWindowsPatchBaseline
+      OperatingSystem: WINDOWS
+
+  #-------------------------------------------------
+  # Set Default Patch Baselines for the account using a custom resource that will also update and unset them during stack updates and deletion.
+  #-------------------------------------------------
+  DefaultAmazonLinux2PatchBaseline:
+    Type: Custom::DefaultPatchBaseline
+    Properties:
+      ServiceToken: !GetAtt LambdaDefaultPatchBaselineCustomResource.Arn
+      BaselineId: !Ref AmazonLinux2PatchBaseline
+  DefaultOraclePatchBaseline:
+    Type: Custom::DefaultPatchBaseline
+    Properties:
+      ServiceToken: !GetAtt LambdaDefaultPatchBaselineCustomResource.Arn
+      BaselineId: !Ref OraclePatchBaseline
+        
+  DefaultCentosPatchBaseline:
+    Type: Custom::DefaultPatchBaseline
+    Properties:
+      ServiceToken: !GetAtt LambdaDefaultPatchBaselineCustomResource.Arn
+      BaselineId: !Ref CentosPatchBaseline    
+
+  DefaultUbuntuPatchBaseline:
+    Type: Custom::DefaultPatchBaseline
+    Properties:
+      ServiceToken: !GetAtt LambdaDefaultPatchBaselineCustomResource.Arn
+      BaselineId: !Ref UbuntuPatchBaseline    
+
+  DefaultDebianPatchBaseline:
+    Type: Custom::DefaultPatchBaseline
+    Properties:
+      ServiceToken: !GetAtt LambdaDefaultPatchBaselineCustomResource.Arn
+      BaselineId: !Ref DebianPatchBaseline
+
+  DefaultSusePatchBaseline:
+    Type: Custom::DefaultPatchBaseline
+    Properties:
+      ServiceToken: !GetAtt LambdaDefaultPatchBaselineCustomResource.Arn
+      BaselineId: !Ref SusePatchBaseline
+
+  DefaultRedhatPatchBaseline:
+    Type: Custom::DefaultPatchBaseline
+    Properties:
+      ServiceToken: !GetAtt LambdaDefaultPatchBaselineCustomResource.Arn
+      BaselineId: !Ref RedhatPatchBaseline      
+  DefaultAmazonLinuxPatchBaseline:
+    Type: Custom::DefaultPatchBaseline
+    Properties:
+      ServiceToken: !GetAtt LambdaDefaultPatchBaselineCustomResource.Arn
+      BaselineId: !Ref AmazonLinuxPatchBaseline
+
+  DefaultWindowsPatchBaseline:
+    Type: Custom::DefaultPatchBaseline
+    Properties:
+      ServiceToken: !GetAtt LambdaDefaultPatchBaselineCustomResource.Arn
+      BaselineId: !Ref WindowsPatchBaseline    
+
+        
+  
+
+  #-------------------------------------------------
+  # Custom resource Lambda used to set the default patch baselines for the account/region. 
+  #-------------------------------------------------
+  LambdaDefaultPatchBaselineCustomResource:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Cloudformation Custom Resource function used to register default patch baselines
+      Handler: index.handler
+      Role: !GetAtt LambdaDefaultPatchbaselineCustomResourceExecutionRole.Arn
+      Code:
+        ZipFile: |
+          import logging
+          import boto3
+          import urllib3
+          import uuid
+          from botocore.exceptions import ClientError
+          import cfnresponse
+
+          logger = logging.getLogger(__name__)
+          logger.setLevel(logging.DEBUG)
+
+          try:
+              ssm_client = boto3.client("ssm")
+              pass
+          except Exception as e:
+              logger.error('Unable to create SSM client: {}'.format(str(e)))
+
+          def create(baseline_id):
+              logger.info("Got Create")   
+              default_baseline_id = ssm_client.register_default_patch_baseline(BaselineId=baseline_id)
+              logger.info("BaselineId: {}".format(default_baseline_id['BaselineId']))
+              return cfnresponse.SUCCESS, {"BaselineId": default_baseline_id['BaselineId']}, uuid.uuid4().hex
+          def update(baseline_id):
+              logger.info("Got Update")
+              default_baseline_id = ssm_client.register_default_patch_baseline(BaselineId=baseline_id)
+              return cfnresponse.SUCCESS, {"BaselineId": default_baseline_id['BaselineId']}
+          def delete(baseline_id):
+              logger.info("Got Delete")
+              try:
+                  baseline = get_patch_baseline(baseline_id)
+                  if baseline.get('DefaultBaseline', False):
+                      default_baseline = [item for item in ssm_client.describe_patch_baselines()['BaselineIdentities'] if item['BaselineId'].lower().startswith('arn:') and item.get('OperatingSystem', '') == baseline.get('OperatingSystem', '')]
+                      default_baseline = default_baseline[0] if len(default_baseline) else {}
+                      logger.info('AWS Default Baseline: {}'.format(default_baseline))
+                      baseline_id = ssm_client.register_default_patch_baseline(BaselineId=default_baseline.get('BaselineId', ''))
+                      logger.info ('Set default baseline to: {}'.format(baseline_id))
+                  else:
+                      logger.info ('Not default baseline for OS, skipping')
+                  return cfnresponse.SUCCESS, {}
+              except ClientError as e:
+                  if e.response['Error']['Code'] == "DoesNotExistException":
+                      logger.warn('Got DoesNotExistException: {}'.format(str(e)))
+                      return cfnresponse.SUCCESS, {}
+                  else:
+                      raise ValueError("Cannot deregister " + baseline_id + ": " + str(e))
+          def get_patch_baseline(baseline_id):
+              baseline = [item for item in ssm_client.describe_patch_baselines()['BaselineIdentities'] if item['BaselineId'] == baseline_id]
+              return baseline[0] if len(baseline) else {}
+                      
+          def handler(event, context):
+              logger.debug(event)
+              if ssm_client == None:
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Reason': 'Unable to create SSM Client.'})
+              try:
+                  baseline_id = event.get('ResourceProperties').get('BaselineId')
+                  logger.debug("BaselineId: {}".format(baseline_id))   
+                  physical_id = event.get('PhysicalResourceId', '')
+                  if event['RequestType'] == 'Create':
+                      response, data, physical_id = create(baseline_id)
+                  elif event['RequestType'] == 'Update':
+                      old_baseline_id = event.get('OldResourceProperties').get('BaselineId')
+                      if  old_baseline_id != baseline_id:
+                          response, data, _ = create(baseline_id)
+                          if get_patch_baseline(old_baseline_id).get('OperatingSystem', '') != get_patch_baseline(baseline_id).get('OperatingSystem', ''):
+                              delete(old_baseline_id)
+                      else: response, data  = update(old_baseline_id)
+                  elif event['RequestType'] == 'Delete':
+                      response, data = delete(baseline_id)
+                  else:
+                      logger.error('Unknown operation: {}'.format(event['RequestType']))
+                      raise ValueError ('Unknown Operation.')
+                  cfnresponse.send(event, context, response, data, physical_id)
+              except Exception as e:
+                  logger.error('Exception: {}'.format(str(e)))
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Reason': str(e)}, physical_id)
+                  raise
+      Runtime: python3.8
+      Timeout: 120                  
+
+  LambdaDefaultPatchbaselineCustomResourceExecutionRole:  
+    Type: 'AWS::IAM::Role'
+    Properties:
+      #RoleName: !Sub LambdaDefaultPatchBaselineExecutionRole-${AWS::Region}
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: ExecutionPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:DescribePatchBaselines
+                  - ssm:RegisterDefaultPatchBaseline
+                Resource: '*'
+              - Effect: Allow
+                Action: 
+                - 'logs:CreateLogGroup'
+                - 'logs:CreateLogStream'
+                - 'logs:PutLogEvents'
+                Resource: 'arn:aws:logs:*:*:*'
+
+  PatchingAutomation:
+    Type: AWS::SSM::Document
+    Properties:
+      #Name: !Sub '${Namespace}-PatchingAutomation'
+      DocumentType: Automation
+      Content: 
+        description: ''
+        assumeRole: "{{AutomationAssumeRole}}"
+        schemaVersion: '0.3'
+        parameters:
+          AutomationAssumeRole:
+            type: String
+            default: ''        
+          InstanceId:
+            type: String
+          PatchingOperation:
+            type: String
+            allowedValues:
+              - Scan
+              - Install
+            default: Scan
+            description: (Required) The update or configuration to perform on the instance. The system checks if patches specified in the patch baseline are installed on the instance. The install operation installs patches missing from the baseline.
+          PatchingRebootOption:
+            type: String
+            allowedValues:
+              - RebootIfNeeded
+              - NoReboot
+            default: NoReboot
+            description: '(Optional) Reboot behavior after a patch Install operation. If you choose NoReboot and patches are installed, the instance is marked as non-compliant until a subsequent reboot and scan.'
+          PatchingInstallOverrideList:
+            type: String
+            default: ''
+          PatchingOutputS3BucketName:
+            type: String
+            default: ''
+            description: (Optional) The name of the S3 bucket to send patching execution logs to.
+          PatchingOutputS3KeyPrefix:
+            type: String
+            default: ''
+            description: (Optional) The path in the S3 bucket to send patching execution logs to.
+          InventoryOutputS3BucketName:
+            type: String
+            default: ''
+            description: (Optional) The name of the S3 bucket to send inventory execution logs to.
+          InventoryOutputS3KeyPrefix:
+            type: String
+            default: ''
+            description: (Optional) The path in the S3 bucket to send inventory execution logs to.            
+          PatchingTimeoutSeconds:
+            type: Integer
+            default: 7200
+            description: (Optional) The maximum duration in seconds of the patching operation before timing out. Default is 2 hours.            
+          GatherInventory:
+            type: String
+            default: 'false'
+            allowedValues:
+              - 'true'
+              - 'false'
+            description: (Optional) Gather a software inventory of the system after patching. Default is false.
+          AttachInstanceProfileArn:
+            type: String
+            default: ''
+            description: (Optional) The Arn of an instance profile that will be temporarily attached to instances that do not have an IAM Role/Profile attached. This can be used to ensure SSM can run patching commands on instances without an IAM profile. If empty, the automation will not attempt to attach a profile to unmanaged instances.
+          AttachPolicyArns:
+            type: StringList
+            default: []
+            description: (Optional) A list of Arns to temporarily attach to the instance proile of an instance. This can be used to temporarily enable SSM to run commands in situations where permanently attaching policies is not desired. If empty, no policies are attached.
+          StartInstance:
+            type: String
+            allowedValues:
+              - 'true'
+              - 'false'
+            default: 'false'
+            description: '(Optional) If true, the instance will be started prior to patching if it is stopped. If the instance was stopped prior to patching, it will be stopped again after patching is complete. Default is false.'
+          SkipTags:
+            type: MapList
+            description: 'A MapList of instances Tags and (optional) Values that, if present on the instance, indicate it should not be patched and the automation should stop. By default, if tags NoPatching or SkipPatching are set the automation will be stopped.'
+            default:
+              - Key: SkipPatching
+                Values:
+                  - 'Yes'
+                  - 'True'
+                  - 'true'
+              - Key: NoPatching
+                Values:
+                  - 'Yes'
+                  - 'True'
+                  - 'true'
+              - Key: NoPatching
+              - Key: SkipPatching
+        mainSteps:
+          - name: DescribeTags
+            action: 'aws:executeAwsApi'
+            inputs:
+              Service: ec2
+              Api: DescribeTags
+              Filters:
+                - Name: resource-id
+                  Values:
+                    - '{{InstanceId}}'
+              MaxResults: 1000
+            outputs:
+              - Selector: $.Tags
+                Name: Tags
+                Type: MapList       
+          - name: CheckForSkippedTags
+            action: 'aws:executeScript'
+            inputs:
+              Runtime: python3.7
+              Handler: script_handler
+              Script: |-
+                def script_handler(events, context):
+                    print(events['InstanceTags'])
+                    print(events['SkipTags'])
+                    for skip_tag in events['SkipTags']:
+                        if skip_tag.get('Key', None):
+                            for matching_tag in [tag for tag in events['InstanceTags'] if tag.get('Key','') == skip_tag['Key']]:
+                                if not skip_tag.get('Values', []):
+                                    print("Matching tag key: {}, any value".format(matching_tag['Key']))
+                                    return {'Match': True}
+                                if [value for value in skip_tag['Values'] if value == matching_tag['Value']]:
+                                    print("Matching tag key: {}, value: {}".format(matching_tag['Key'], matching_tag['Value']))
+                                    return {'Match': True}
+                    return {'Match': False}
+              InputPayload:
+                InstanceTags: '{{DescribeTags.Tags}}'
+                SkipTags: '{{SkipTags}}'
+            outputs:
+              - Name: Match
+                Selector: $.Payload.Match
+                Type: Boolean
+            description: Checks if there are tags returned by DescribeTags that match SkipTags
+          - name: choiceSkip
+            action: 'aws:branch'
+            inputs:
+              Choices:
+                - Variable: '{{CheckForSkippedTags.Match}}'
+                  BooleanEquals: false
+                  NextStep: CheckExistingExecution
+            description: 'If there was a matching SkipTag on the instance, stops the automation.'
+            isEnd: true
+          - name: CheckExistingExecution
+            action: 'aws:executeScript'
+            inputs:
+              Runtime: python3.7
+              Handler: script_handler
+              Script: |-
+                import boto3
+                ssm = boto3.client('ssm')
+                def script_handler(events, context):
+                    print(events['InstanceTags'])
+                    for matching_tag in [tag for tag in events['InstanceTags'] if tag.get('Key','') == 'InstancePatchingLastExecutionId']:
+                        last_execution_id = matching_tag['Value']
+                        running_execution = ssm.describe_automation_executions(
+                            Filters=[
+                                {
+                                    'Key': 'ExecutionId',
+                                    'Values': [last_execution_id]
+                                },
+                                {
+                                    'Key': 'ExecutionStatus',
+                                    'Values': ['InProgress']
+                                }                              
+                            ]
+                            )
+                        if len(running_execution.get('AutomationExecutionMetadataList', [])):
+                            print("Last Execution {} currently in progress".format(last_execution_id))
+                            return {'InProgress': True}
+                    return {'InProgress': False}
+              InputPayload:
+                InstanceTags: '{{DescribeTags.Tags}}'
+            outputs:
+              - Name: InProgress
+                Selector: $.Payload.InProgress
+                Type: Boolean              
+            description: Check if another execution of the patching automation is currently being applied to the instance.  
+          - name: choicePatchingAutomationAlreadyRunning
+            action: 'aws:branch'
+            inputs:
+              Choices:
+                - Variable: '{{CheckExistingExecution.InProgress}}'
+                  BooleanEquals: false
+                  NextStep: TagInstancePatchingLastExecutionId    
+            description: 'If there is already another execution running, do not proceed.'
+            isEnd: true            
+          - name: TagInstancePatchingLastExecutionId
+            action: 'aws:createTags'
+            inputs:
+              ResourceType: EC2
+              ResourceIds:
+                - '{{InstanceId}}'
+              Tags:
+                - Key: InstancePatchingLastExecutionId
+                  Value: '{{automation:EXECUTION_ID}}'
+            description: Creates the tag InstancePatchingLastExecutionId. This is used to store the current Execution Id. Logic in the automation ensures only one instantiation runs on an instance at a time.            
+          - name: GetInstanceState
+            action: 'aws:executeAwsApi'
+            outputs:
+              - Name: State
+                Selector: '$.Reservations[0].Instances[0].State.Name'
+                Type: String
+            inputs:
+              Service: ec2
+              Api: DescribeInstances
+              InstanceIds:
+                - '{{InstanceId}}'
+            description: Gets the current state of the instance (i.e. running or stopped).
+          - name: GetDatetime
+            action: 'aws:executeScript'
+            inputs:
+              Runtime: python3.6
+              Handler: script_handler
+              Script: |-
+                import datetime
+                def script_handler(events, context):
+                  return {'datetime': str(datetime.datetime.now())}
+            outputs:
+              - Name: Datetime
+                Selector: $.Payload.datetime
+                Type: String
+            description: Gets the current date and time and returns it as output 'Datetime'
+          - name: TagInstanceTimestamp
+            action: 'aws:createTags'
+            inputs:
+              ResourceType: EC2
+              ResourceIds:
+                - '{{InstanceId}}'
+              Tags:
+                - Key: InstancePatchingLastBeginTime
+                  Value: '{{GetDatetime.Datetime}}'
+            description: Creates or overwrites the tag 'InstancePatchingLastBeginTime' on the instance with the current Datetime. This can be used to check the last patching start time and as part of logic to find instances that should have been stopped after patching but are still running.            
+          - name: TagInstanceState
+            action: 'aws:createTags'
+            inputs:
+              ResourceType: EC2
+              ResourceIds:
+                - '{{InstanceId}}'
+              Tags:
+                - Key: InstancePatchingBeginState
+                  Value: '{{GetInstanceState.State}}'
+            description: Creates the tag InstancePatchingBeginState on the instance with its current state (running or stopped). This can be used to check the instance state as part of logic to find instances that should have been stopped after patching but are still running.
+          - name: GetInstanceProfile
+            action: 'aws:executeAwsApi'
+            outputs:
+              - Name: Arn
+                Selector: '$.Reservations[0].Instances[0].IamInstanceProfile.Arn'
+                Type: String
+            inputs:
+              Service: ec2
+              Api: DescribeInstances
+              InstanceIds:
+                - '{{InstanceId}}'
+            description: Gets the current instance profile Arn.
+          - name: choiceAttachProfilePolicies
+            action: 'aws:branch'
+            inputs: 
+              Choices:
+                - And:
+                    - Variable: '{{GetInstanceProfile.Arn}}'
+                      Contains: 'GetInstanceProfile.Arn'
+                    - Not:
+                        Variable: '{{AttachInstanceProfileArn}}'
+                        StringEquals: ''
+                  NextStep: AssociateInstanceProfile
+                # - And:
+                #     - Not:
+                #         Variable: '{{GetInstanceProfile.Arn}}'
+                #         StringEquals: ''
+                #     - Not:
+                #         Variable: '{{AttachPolicyArns}}'
+                #         StringEquals: ''
+                #   NextStep: GetInstanceProfileRole
+              Default: choiceStartInstance
+          - name: AssociateInstanceProfile
+            action: 'aws:executeAwsApi'
+            inputs:
+              Service: ec2
+              Api: AssociateIamInstanceProfile
+              IamInstanceProfile: 
+                Arn: '{{AttachInstanceProfileArn}}'
+              InstanceId: '{{InstanceId}}'
+            outputs:
+              - Name: AssociationId
+                Selector: $.IamInstanceProfileAssociation.AssociationId
+                
+            isCritical: false
+            onFailure: 'step:choiceStartInstance'
+            nextStep: choiceStartInstance
+
+          # - name: GetInstanceProfileRole
+          #   action: 'aws:executeScript'
+          #   inputs:
+          #     Runtime: python3.7
+          #     Handler: script_handler
+          #     Script: |-
+          #       import boto3
+          #       iam = boto3.client('iam')              
+          #       def script_handler(events, context):
+          #           profile_arn = events.get('ProfileArn', None)
+          #           print(profile_arn)
+          #           paginator = iam.get_paginator('list_instance_profiles')
+          #           list_instance_profiles_iterator = paginator.paginate()
+          #           for profiles in list_instance_profiles_iterator:
+          #               for profile in profiles['InstanceProfiles']:
+          #                   if profile['Arn'] == profile_arn:
+          #                       print("Found matching Arn: {}".format(profile['Arn']))
+          #                       profile_role = profile['Roles'][0]['RoleName']                
+          #                       return {'RoleArn': profile_role}
+          #     InputPayload:
+          #       ProfileArn: '{{GetInstanceProfile.Arn}}'
+          #   outputs:
+          #     - Name: Name
+          #       Selector: $.Payload.RoleName
+          #       Type: String
+          #   description: Gets the IAM role associated with an instance profile
+          #   isCritical: false
+          #   onFailure: 'step:choiceStartInstance'
+
+          # - name: AttachPolicies
+          #   action: 'aws:executeScript'
+          #   inputs:
+          #     Runtime: python3.7
+          #     Handler: script_handler
+          #     Script: |-
+          #       import boto3
+          #       iam = boto3.client('iam')
+          #       def script_handler(events, context):
+          #         policy_arns = events.get('PolicyArns', [])
+          #         role_name = events.get('RoleName', '')
+          #         print(policy_arns)
+          #         print(role_name)
+          #         existing_policies = iam.list_attached_role_policies(RoleName=role_name).get('AttachedPolicies', {})
+          #         existing_policies = [arn.get('PolicyArn', '') for arn in existing_policies if arn.get('PolicyArn', None)]
+          #         attached_policies = []
+          #         for policy in policy_arns:
+          #           if not policy in existing_policies:
+          #             print("Attaching {} to {}".format(policy, role_name))
+          #             iam.attach_role_policy(RoleName=role_name, PolicyArn=policy)
+          #             attached_policies.append(policy)
+          #         return {'AttachedPolicies': attached_policies}                      
+          #     InputPayload:
+          #       PolicyArns: '{{AttachPolicyArns}}'
+          #       RoleName: '{{GetInstanceProfileRole.Name}}'
+          #   outputs:
+          #     - Name: AttachedPolicies
+          #       Type: StringList
+          #       Selector: $.Payload.AttachedPolicies
+          #   description: Attaches a list of managed policiy Arns to an IAM role
+          #   isCritical: false
+          #   onFailure: 'step:choiceStartInstance'
+          - name: choiceStartInstance
+            action: 'aws:branch'
+            inputs:
+              Choices:
+                - Variable: '{{StartInstance}}'
+                  EqualsIgnoreCase: 'true'
+                  NextStep: StartInstance
+              Default: choicePatchInstanceLogToS3
+            description: 'When StartInstance is set to true, go to the StartInstance step. Otherwise, go to choicePatchInstanceLogToS3.'       
+          - name: StartInstance
+            action: 'aws:changeInstanceState'
+            inputs:
+              InstanceIds:
+                - '{{InstanceId}}'
+              DesiredState: running
+            description: Start the instance if it is not running
+            onFailure: 'step:choiceStopInstance'
+            onCancel: 'step:choiceStopInstance'
+            isCritical: true               
+          - name: waitForInstanceOnline
+            action: 'aws:waitForAwsResourceProperty'
+            inputs:
+              Service: ssm
+              Api: DescribeInstanceInformation
+              InstanceInformationFilterList: 
+                - key: InstanceIds
+                  valueSet: 
+                    - '{{InstanceId}}'
+              PropertySelector: "$.InstanceInformationList[0].PingStatus"
+              DesiredValues:
+                - Online
+            timeoutSeconds: 600
+            onFailure: 'step:choiceStopInstance'
+            onCancel: 'step:choiceStopInstance'
+            isCritical: true
+            description: Verify the instance is online and managed by SSM prior to patching. 
+          - name: choicePatchInstanceLogToS3
+            action: 'aws:branch'
+            inputs:
+              Choices:
+                - Or:
+                    - Variable: '{{PatchingOutputS3BucketName}}'
+                      StringEquals: ''
+                    - Variable: '{{PatchingOutputS3KeyPrefix}}'
+                      StringEquals: ''
+                  NextStep: PatchInstance
+              Default: PatchInstanceLogToS3
+            description: 'If PatchingOutputS3BucketName and PatchingOutputS3KeyPrefix are set, go to step that starts patching with execution logs sent to an S3 bucket. Otherwise, go to step that starts patching without sending execution logs to S3.'
+          - name: PatchInstanceLogToS3
+            action: 'aws:runCommand'
+            inputs:
+              DocumentName: AWS-RunPatchBaseline
+              InstanceIds:
+                - '{{InstanceId}}'
+              Parameters:
+                RebootOption: '{{PatchingRebootOption}}'
+                Operation: '{{PatchingOperation}}'
+                InstallOverrideList: '{{PatchingInstallOverrideList}}'
+              OutputS3BucketName: '{{PatchingOutputS3BucketName}}'
+              OutputS3KeyPrefix: '{{PatchingOutputS3KeyPrefix}}'
+              TimeoutSeconds: '{{PatchingTimeoutSeconds}}'
+            nextStep: choiceGatherInventory
+            onFailure: Continue
+            isCritical: true
+            onCancel: 'step:choiceStopInstance'
+            description: Execute AWS-RunPatchBasline and send execution logs to S3.
+          - name: PatchInstance
+            action: 'aws:runCommand'
+            inputs:
+              DocumentName: AWS-RunPatchBaseline
+              InstanceIds:
+                - '{{InstanceId}}'
+              Parameters:
+                RebootOption: '{{PatchingRebootOption}}'
+                Operation: '{{PatchingOperation}}'
+                InstallOverrideList: '{{PatchingInstallOverrideList}}'
+              TimeoutSeconds: '{{PatchingTimeoutSeconds}}'
+            onFailure: Continue
+            isCritical: true
+            onCancel: 'step:choiceStopInstance'
+            description: Execution AWS-RunPatchBaseline
+          - name: choiceGatherInventory
+            action: 'aws:branch'
+            inputs:
+              Choices:
+                - Variable: '{{GatherInventory}}'
+                  EqualsIgnoreCase: 'true'
+                  NextStep: choiceGatherInventoryLogToS3
+              Default: choiceStopInstance
+            description: 'If GatherInventory is true, move to choiceGatherInventoryLogToS3, otherwise go choiceStopInstance.'
+            onFailure: Continue
+            onCancel: 'step:choiceStopInstance'
+          - name: choiceGatherInventoryLogToS3
+            action: 'aws:branch'
+            inputs:
+              Choices:
+                - Or:
+                    - Variable: '{{InventoryOutputS3BucketName}}'
+                      StringEquals: ''
+                    - Variable: '{{InventoryOutputS3KeyPrefix}}'
+                      StringEquals: ''
+                  NextStep: CreateAssociationGatherInventory
+              Default: CreateAssociationGatherInventoryLogToS3
+            onFailure: 'step:choiceStopInstance'
+            onCancel: 'step:choiceStopInstance'
+          - name: CreateAssociationGatherInventoryLogToS3
+            action: 'aws:executeAwsApi'
+            inputs:
+              Service: ssm
+              Api: CreateAssociation
+              Name: AWS-GatherSoftwareInventory
+              Parameters:
+                applications:
+                  - Enabled
+                awsComponents:
+                  - Enabled
+                files:
+                  - ''
+                networkConfig:
+                  - Enabled
+                windowsUpdates:
+                  - Enabled
+                instanceDetailedInformation:
+                  - Enabled
+                services:
+                  - Enabled
+                windowsRegistry:
+                  - ''
+                windowsRoles:
+                  - Enabled
+                customInventory:
+                  - Enabled
+                billingInfo:
+                  - Enabled
+              OutputLocation:
+                S3Location:
+                  OutputS3BucketName: '{{InventoryOutputS3BucketName}}'
+                  OutputS3KeyPrefix: '{{InventoryOutputS3KeyPrefix}}'
+              Targets:
+                - Key: InstanceIds
+                  Values:
+                    - '{{InstanceId}}'
+              AssociationName: 'Patching-AWS-GatherSoftwareInventory-{{InstanceId}}'
+            outputs:
+              - Name: AssociationId
+                Selector: $.AssociationDescription.AssociationId
+                Type: String
+            description: Create an association for gathering inventory
+            nextStep: GetAssociationId
+            onFailure: 'step:choiceStopInstance'
+            onCancel: 'step:choiceStopInstance'
+          - name: CreateAssociationGatherInventory
+            action: 'aws:executeAwsApi'
+            inputs:
+              Service: ssm
+              Api: CreateAssociation
+              Parameters:
+                applications:
+                  - Enabled
+                awsComponents:
+                  - Enabled
+                files:
+                  - ''
+                networkConfig:
+                  - Enabled
+                windowsUpdates:
+                  - Enabled
+                instanceDetailedInformation:
+                  - Enabled
+                services:
+                  - Enabled
+                windowsRegistry:
+                  - ''
+                windowsRoles:
+                  - Enabled
+                customInventory:
+                  - Enabled
+                billingInfo:
+                  - Enabled
+              Name: AWS-GatherSoftwareInventory
+              Targets:
+                - Key: InstanceIds
+                  Values:
+                    - '{{InstanceId}}'
+              AssociationName: 'Patching-AWS-GatherSoftwareInventory-{{InstanceId}}'
+            outputs:
+              - Name: AssociationId
+                Selector: $.AssociationDescription.AssociationId
+                Type: String
+            onFailure: 'step:choiceStopInstance'
+            onCancel: 'step:choiceStopInstance'
+          - name: GetAssociationId
+            action: 'aws:executeScript'
+            inputs:
+              Runtime: python3.7
+              Handler: script_handler
+              Script: |-
+                def script_handler(events, context):
+                  print(events.get('CreateAssociation-GatherInventory', ''))
+                  print(events.get('CreateAssociation-GatherInventoryLogToS3', ''))
+                  if not ('AssociationId}}' in events.get('CreateAssociation-GatherInventory', '') or events.get('CreateAssociation-GatherInventory', '') == ''):
+                    return {'AssociationId': events['CreateAssociation-GatherInventory']}
+                  else:
+                    return  {'AssociationId': events['CreateAssociation-GatherInventoryLogToS3']}
+              InputPayload:
+                CreateAssociation-GatherInventory: '{{CreateAssociationGatherInventory.AssociationId}}'
+                CreateAssociation-GatherInventoryLogToS3: '{{CreateAssociationGatherInventoryLogToS3.AssociationId}}'
+            outputs:
+              - Name: AssociationId
+                Selector: $.Payload.AssociationId
+                Type: String
+            description: Gets the AssociationId from the previous CreateAssociation call for the following steps.
+            onFailure: Continue
+            onCancel: 'step:DeleteAssociation'
+          - name: StartAssociationsOnce
+            action: 'aws:executeAwsApi'
+            inputs:
+              Api: StartAssociationsOnce
+              Service: ssm
+              AssociationIds:
+                - '{{GetAssociationId.AssociationId}}'
+            onFailure: 'step:DeleteAssociation'
+            onCancel: 'step:DeleteAssociation'
+          - name: waitDescribeAssociationExecutions
+            action: 'aws:waitForAwsResourceProperty'
+            inputs:
+              PropertySelector: '$.AssociationExecutions[0].Status'
+              DesiredValues:
+                - Success
+                - Failed
+              AssociationId: '{{GetAssociationId.AssociationId}}'
+              Service: ssm
+              Api: DescribeAssociationExecutions
+            description: Waits for DescribeAssociationStatus to return "Success" or "Failed" to indicate the Association has finished.
+            timeoutSeconds: 600
+            onFailure: Continue
+            isCritical: false
+            onCancel: 'step:DeleteAssociation'
+          - name: assertDescribeAssociationExecutionsSuccess
+            action: 'aws:assertAwsResourceProperty'
+            inputs:
+              Service: ssm
+              Api: DescribeAssociationExecutions
+              PropertySelector: '$.AssociationExecutions[0].Status'
+              DesiredValues:
+                - Success
+              AssociationId: '{{GetAssociationId.AssociationId}}'
+            description: Asserts that the association completed successfully
+            timeoutSeconds: 30
+            onCancel: 'step:DeleteAssociation'
+            onFailure: Continue
+          - name: DeleteAssociation
+            action: 'aws:executeAwsApi'
+            inputs:
+              Service: ssm
+              Api: DeleteAssociation
+              AssociationId: '{{GetAssociationId.AssociationId}}'
+            onFailure: Continue
+            onCancel: 'step:choiceStopInstance'
+          - name: choiceStopInstance
+            action: 'aws:branch'
+            inputs:
+              Choices:
+                - Variable: '{{GetInstanceState.State}}'
+                  EqualsIgnoreCase: stopped
+                  NextStep: StopInstance
+              Default: UntagInstanceState
+            description: 'If the instance was previously stopped, go to StopInstance step. Otherwise, skip StopInstance step and go to UntagInstanceState.'
+          - name: StopInstance
+            action: 'aws:changeInstanceState'
+            inputs:
+              InstanceIds:
+                - '{{InstanceId}}'
+              DesiredState: stopped
+            timeoutSeconds: 300
+            onFailure: Continue
+            description: Stop the instance gracefully. This should only run if the instance was previously in a stopped state. Timeout is set to 300 seconds.
+          - name: ForceStopInstance
+            action: 'aws:changeInstanceState'
+            inputs:
+              InstanceIds:
+                - '{{InstanceId}}'
+              DesiredState: stopped
+              Force: true
+            description: Forcefully stop the instance if it is not already stopped. This should only run if the instance was previously in a stopped state. It will only affect an instance that could not be gracefully stopped in 5 minutes.
+          - name: choiceDisassociateInstanceProfile
+            action: 'aws:branch'
+            inputs:
+              Choices:
+                - Not:
+                    Variable: '{{AssociateInstanceProfile.AssociationId}}'
+                    Contains: 'AssociateInstanceProfile.AssociationId'
+                  NextStep: DisassociateInstanceProfile
+              Default: UntagInstanceState
+            description: 'Determine if temporary instance profile was set and needs to be disassociated.'            
+          - name: DisassociateInstanceProfile
+            action: 'aws:executeAwsApi'
+            inputs:
+              Service: ec2
+              Api: DisassociateIamInstanceProfile
+              AssociationId: '{{AssociateInstanceProfile.AssociationId}}'
+            outputs:
+              - Name: State
+                Selector: $.IamInstanceProfileAssociation.State
+            onFailure: Continue
+            description: Disassociates the temporary instance profile from the instance.   
+          # - name: DetachPolicies
+          #   action: 'aws:executeScript'
+          #   inputs:
+          #     Runtime: python3.7
+          #     Handler: script_handler
+          #     Script: |-
+          #       import boto3
+          #       iam = boto3.client('iam')              
+          #       def script_handler(events, context):
+          #           policy_arns = events.get('PolicyArns', [])
+          #           role_name = events.get('RoleName', '')
+          #           print(policy_arns)
+          #           print(role_name)
+          #           for policy in policy_arns:
+          #               print("Detaching {} to {}".format(policy, role_name))
+          #               iam.detach_role_policy(RoleName=role_name, PolicyArn=policy)
+          #     InputPayload:
+          #       PolicyArns: '{{AttachPolicies.PolicyArns}}'
+          #       RoleArn: '{{GetInstanceProfileRole.Name}}'
+          #   onFailure: Continue
+          #   onCancel: 'step:UntagInstanceState'
+
+          - name: UntagInstanceState
+            action: 'aws:executeAwsApi'
+            inputs:
+              Service: ec2
+              Api: DeleteTags
+              Resources:
+                - '{{InstanceId}}'
+              Tags:
+                - Key: InstancePatchingBeginState
+            onFailure: Continue
+            description: Removes the InstancePatchingBeginState tag from the instance. This indicates the instance is no longer being patched. This can be used to check the instance state as part of logic to find instances that should have been stopped after patching but are still running.
+
+          - name: UntagInstancePatchingLastExecutionId
+            action: 'aws:executeAwsApi'
+            inputs:
+              Service: ec2
+              Api: DeleteTags
+              Resources:
+                - '{{InstanceId}}'
+              Tags:
+                - Key: InstancePatchingLastExecutionId
+            onFailure: Continue           
+
+  PatchingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: '/'
+      RoleName: !Sub "patching-role-${AWS::Region}"
+      AssumeRolePolicyDocument: 
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ssm.amazonaws.com
+            Action: 'sts:AssumeRole'                
+      Policies:
+        - PolicyName: "PatchingAutomationRolePolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action: 
+                  - ec2:CreateTags 
+                  - ec2:DeleteTags
+                  - ec2:DescribeTags
+                  - ec2:DescribeInstances
+                  - ec2:DescribeInstanceStatus
+                  - ec2:StopInstances
+                  - ec2:StartInstances
+                  - ec2:AssociateIamInstanceProfile
+                  - ec2:DisassociateIamInstanceProfile
+                  - iam:ListInstanceProfiles
+                  - ssm:DescribeInstanceInformation
+                  - ssm:CreateAssociation
+                  - ssm:StartAssociationsOnce
+                  - ssm:DeleteAssociation
+                  - ssm:DescribeAssociationExecutions
+                  - ssm:DescribeAutomationExecutions
+                  - ssm:SendCommand
+                  - ssm:ListCommands
+                  - ssm:ListCommandInvocations
+                Resource: "*"
+              - Effect: "Allow"
+                Action: 
+                  - 'iam:AttachRolePolicy'                  
+                Resource: "*"
+                Condition:
+                  ForAllValues:StringEqualsIgnoreCase:
+                    iam:PolicyARN:
+                      - 'arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore'
+                      - 'arn:aws:iam::aws:policy/AmazonSSMPatchAssociation'
+                      - !Sub ${PatchingManagedPolicy}                
+              - Effect: "Allow"
+                Action:
+                  - iam:PassRole
+                Resource: 
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/patching-role-${AWS::Region}'
+                  - !Sub ${PatchingInstanceProfileRole.Arn}
+              
+  
+  PatchingAssociation:
+    Type: 'AWS::SSM::Association'
+    Properties:
+      Name: !Ref PatchingAutomation
+      ScheduleExpression: !Sub '${PatchSchedule}'
+      AutomationTargetParameterName: InstanceId      
+      ApplyOnlyAtCronInterval: True
+      AssociationName: !Sub Patching-${AWS::AccountId}-${AWS::Region}
+      Parameters:
+        AutomationAssumeRole: 
+          - !GetAtt PatchingRole.Arn      
+        PatchingOperation: 
+          - !Sub ${PatchingOperation}
+        PatchingRebootOption: 
+          - !Sub ${PatchingRebootOption}
+        PatchingInstallOverrideList: 
+          - !Sub ${PatchingInstallOverrideList}
+        PatchingOutputS3BucketName: 
+          - !Sub ${ExecutionLogsS3Bucket}
+        PatchingOutputS3KeyPrefix: 
+          - !Sub ${PatchingExecutionLogsS3BucketPrefix}/accountid={{global:ACCOUNT_ID}}/region={{global:REGION}}/executionid={{automation:EXECUTION_ID}}
+        InventoryOutputS3BucketName: 
+          - !Sub ${ExecutionLogsS3Bucket}
+        InventoryOutputS3KeyPrefix: 
+          - !Sub ${InventoryExecutionLogsS3BucketPrefix}/accountid={{global:ACCOUNT_ID}}/region={{global:REGION}}/executionid={{automation:EXECUTION_ID}}        
+        PatchingTimeoutSeconds: 
+          - !Sub ${PatchingTimeoutSeconds}
+        GatherInventory: 
+          - !Sub ${GatherInventory}
+        StartInstance: 
+          - !Sub ${StartInstances}
+        AttachInstanceProfileArn:
+          - !If 
+              - AutoAttachInstanceProfile
+              - !Sub ${PatchingInstanceProfile.Arn}
+              - !Ref AWS::NoValue
+        # AttachPolicyArns:
+        #   !If
+        #     - AutoAttachInstanceProfile
+        #     - - !Sub '${PatchingManagedPolicy}'
+        #       - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        #       - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+        #     - !Ref AWS::NoValue 
+      Targets:
+        - Values:
+            - '*'
+          Key: InstanceIds
+
+
+  PatchingInstanceProfileRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "patching-instance-role-${AWS::Region}"
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          Sid: AssumeRole
+          Effect: Allow
+          Principal:
+            Service:
+              - ec2.amazonaws.com
+          Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+
+
+  PatchingManagedPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: F5
+    Properties:
+      Description: Default Permissions for EC2 instances
+      ManagedPolicyName: !Sub "patching-instance-perms-${AWS::Region}"
+      Roles:
+        - !Ref PatchingInstanceProfileRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: S3GetExecutionBucket
+            Effect: Allow
+            Action:
+              - s3:List*
+              - s3:GetObject
+              - s3:GetEncryptionConfiguration
+            Resource:
+              - !Sub "arn:aws:s3:::${ExecutionLogsS3Bucket}/*"
+              - !Sub "arn:aws:s3:::${ExecutionLogsS3Bucket}"
+          - Sid: S3putlogs
+            Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:PutObjectAcl
+            Resource:
+              - !Sub "arn:aws:s3:::${ExecutionLogsS3Bucket}/${InventoryExecutionLogsS3BucketPrefix}/*"
+              - !Sub "arn:aws:s3:::${ExecutionLogsS3Bucket}/${PatchingExecutionLogsS3BucketPrefix}/*"
+
+  # # Default Instance Profile
+  PatchingInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Ref PatchingInstanceProfileRole
+      Roles:
+        - !Ref PatchingInstanceProfileRole                
+Outputs:
+  StackArn:
+    Value:
+      Ref: 'AWS::StackId'
