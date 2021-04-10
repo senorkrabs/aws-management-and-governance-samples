@@ -221,7 +221,7 @@ Resources:
       InstanceType: t2.small
       ImageId: !Ref LatestAmazonLinuxAmiId
       NetworkInterfaces: 
-        - AssociatePublicIpAddress: "true"
+        - AssociatePublicIpAddress: True
           DeviceIndex: "0"
           GroupSet: 
             - Ref: "InstanceSecurityGroup"
@@ -245,7 +245,7 @@ Resources:
       InstanceType: t2.small
       ImageId: !Ref LatestWindowsAmiId
       NetworkInterfaces: 
-        - AssociatePublicIpAddress: "true"
+        - AssociatePublicIpAddress: True
           DeviceIndex: "0"
           GroupSet: 
             - Ref: "InstanceSecurityGroup"

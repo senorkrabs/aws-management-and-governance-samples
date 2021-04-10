@@ -18,20 +18,19 @@
 
 #------------------------------------------------------------------------------
 #
-# Template: opsmgmt-target-account-inventory.yaml
-# Purpose:  Configures the target accounts for multi-account/multi-region Automation using Patch Manager
+# Template: opsmgmt-target-account-inventory.yml
+# Purpose:  Configures the target accounts for multi-account/multi-region inventory.
 #
 #
 #------------------------------------------------------------------------------
 
 AWSTemplateFormatVersion: '2010-09-09'
-Description: AWS CloudFormation template to configure a target account for a scheduled multi-account and multi-region Automation patching operation.
+Description: AWS CloudFormation template to configure a target account for a scheduled multi-account and multi-region inventory.
 
 #-----------------------------------------------------------
 # Parameters
 #-----------------------------------------------------------
 Parameters :
-
   ExecutionLogsS3Bucket :
     Type : 'String'
     Description: 'Name of the S3 bucket that lives in the central account.'
@@ -56,6 +55,24 @@ Parameters :
     Type : 'String'
     Description: 'Name for the Resource Data Sync.'
     Default: 'InventoryData'
+
+Metadata: 
+  AWS::CloudFormation::Interface: 
+    ParameterGroups: 
+      - 
+        Label: 
+          default: "Central Logging and Invetory"
+        Parameters: 
+          - ExecutionLogsS3Bucket
+          - ExecutionLogsS3BucketPrefix
+      - 
+        Label: 
+          default: "Inventory Resource Data Sync"
+        Parameters: 
+          - ResourceSyncS3Bucket
+          - ResourceSyncS3BucketRegion
+          - ResourceDataSyncName   
+          - ManagedInstanceDataEncryptionKey
 
 Resources:
   #-------------------------------------------------
@@ -112,6 +129,4 @@ Resources:
         KMSKeyArn: !Ref ManagedInstanceDataEncryptionKey
         SyncFormat: 'JsonSerDe'
 
-  #-------------------------------------------------
-  # Default Patch Baselines for the account/region
-  #-------------------------------------------------
+

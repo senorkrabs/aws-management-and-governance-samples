@@ -2,40 +2,63 @@
 
 # Overview
 
-The purpose of this series of CloudFormation templates is to setup a scheduled multi-account and multi-Region (MAMR) patching operation using CloudWatch Events, Lambda, and Systems Manager Automation. Additionally, Systems Manager Inventory is enabled using a State Manager association. The patching, inventory, and compliance data gathered can then be queried and reported on using Amazon Athena or Amazon QuickSight.
+The purpose of this series of CloudFormation templates is to setup a scheduled multi-account and multi-Region (MAMR) patching operation using Systems Manager. In addition to running patching commands on instances,  the Systems Manager automation orchestrates temporarily starting of stopped instances so they can be patched.. 
+
+Additionally, Systems Manager Inventory is enabled using a State Manager association. The patching, inventory, and compliance data gathered can then be queried and reported on using Amazon Athena or Amazon QuickSight.
 
 # Table of Contents
 
+- [Operational Management: Inventory, Patching, and Compliance](#operational-management-inventory-patching-and-compliance)
+- [Overview](#overview)
+- [Table of Contents](#table-of-contents)
 - [Service Concepts](#service-concepts)
 - [Architecture Diagram](#architecture-diagram)
   - [Resulting Environment](#resulting-environment)
     - [(Optional) Patch Microsoft Applications](#optional-patch-microsoft-applications)
-  - [Architecture Workflow](#architecture-workflow)
-    - [Patching Process](#patching-process)
+  - [Architecture Details](#architecture-details)
+    - [Scheduled Patching](#scheduled-patching)
+    - [Patching Automation Workflow](#patching-automation-workflow)
     - [Inventory Data Gathering Process](#inventory-data-gathering-process)
   - [Architecture Notes](#architecture-notes)
 - [Pre-Requisites](#pre-requisites)
-  - [Expectations](#expectations)
-  - [Limitations](#limitations)
+  - [Register your EC2 instance or on-premise hybrid instances](#register-your-ec2-instance-or-on-premise-hybrid-instances)
+    - [Hybrid managd instances](#hybrid-managd-instances)
+  - [Attach IAM policies to EC2 instance profiles for S3](#attach-iam-policies-to-ec2-instance-profiles-for-s3)
+  - [(Optional) Create Patch Baselines and Patch Groups in accounts and regions](#optional-create-patch-baselines-and-patch-groups-in-accounts-and-regions)
 - [Resources Created - Central Account](#resources-created---central-account)
+    - [Resources created by opsmgmt-central-account.yaml](#resources-created-by-opsmgmt-central-accountyaml)
 - [Resources Created - Target Account(s)](#resources-created---target-accounts)
+    - [Resources created by opsmgmt-target-account-inventory.yaml](#resources-created-by-opsmgmt-target-account-inventoryyaml)
+    - [Resources created by opsmgmt-target-account-patching.yaml](#resources-created-by-opsmgmt-target-account-patchingyaml)
 - [Deployment Instructions](#deployment-instructions)
-  - [Create the CloudFormation Stacks in the Central Account](#create-the-cloudformation-stacks-in-the-central-account)
-  - [Create the CloudFormation StackSet in the Central Account](#create-the-cloudFormation-stackset-in-the-central-account)
+  - [Create the CloudFormation Stack in the Central Account](#create-the-cloudformation-stack-in-the-central-account)
+    - [Deploy initial resources using opsmgmt-central-account.yaml](#deploy-initial-resources-using-opsmgmt-central-accountyaml)
+  - [Create the Inventory and Patching CloudFormation StackSets in the Central or Management Account](#create-the-inventory-and-patching-cloudformation-stacksets-in-the-central-or-management-account)
+  - [Deploy Inventory StackSet](#deploy-inventory-stackset)
+  - [Deploy Patching StackSet](#deploy-patching-stackset)
   - [(Optional) Deploy test instances](#optional-deploy-test-instances)
+    - [Resources Created](#resources-created)
+    - [Instructions](#instructions)
 - [Post-Deployment Instructions](#post-deployment-instructions)
   - [Run the AWS Glue Crawler](#run-the-aws-glue-crawler)
     - [(Optional) Verify the Database and Tables within AWS Glue](#optional-verify-the-database-and-tables-within-aws-glue)
   - [Use AWS Athena to query Inventory, Patching, and Compliance data](#use-aws-athena-to-query-inventory-patching-and-compliance-data)
-- [Tear-down Instructions](#tear-down-instructions)
+- [Tear-Down Instructions](#tear-down-instructions)
   - [Remove resources from the Target Account(s)](#remove-resources-from-the-target-accounts)
   - [Remove resources from the Central Account](#remove-resources-from-the-central-account)
-    - [Empty the S3 Bucket](#empty-the-s3-bucket)
+    - [Empty the S3 bucket](#empty-the-s3-bucket)
     - [Delete the Database and Tables in AWS Glue](#delete-the-database-and-tables-in-aws-glue)
-    - [Remove the CloudFormation stack in the Central Account](#remove-the-cloudformation-stack-and-stackset-in-the-central-account)
+    - [Remove the CloudFormation stack and StackSet in the Central account](#remove-the-cloudformation-stack-and-stackset-in-the-central-account)
 - [Related References](#related-references)
+    - [AWS Blogs:](#aws-blogs)
+    - [User Guide Documentation:](#user-guide-documentation)
+    - [Pricing:](#pricing)
 - [Change Log](#change-log)
 - [Example IAM Policies and Trust Relationships](#example-iam-policies-and-trust-relationships)
+      - [Automation Administration role](#automation-administration-role)
+      - [Automation Execution role](#automation-execution-role)
+      - [Glue Crawler role](#glue-crawler-role)
+      - [EC2 Instance IAM profile role](#ec2-instance-iam-profile-role)
 
 # Service Concepts
 
@@ -44,13 +67,12 @@ In this section, we take a closer look at the following concepts of AWS Systems 
 | Service | Term | Definition |
 | --- | --- | --- |
 | AWS Systems Manager | Automation Document | A Systems Manager **automation document**, or playbook, defines the Automation workflow (the actions that Systems Manager performs on your managed instances and AWS resources). Automation includes several pre-defined Automation documents that you can use to perform common tasks like restarting one or more Amazon EC2 instances or creating an Amazon Machine Image (AMI). You can create your own Automation documents as well. Documents use JavaScript Object Notation (JSON) or YAML, and they include steps and parameters that you specify. For more information, see [Working with Automation Documents (Playbooks)](https://docs.aws.amazon.com/systems-manager/latest/userguide/automation-documents.html). |
-| AWS Systems Manager | Automation Administration Role | This role gives the user permission to run Automation workflows in multiple AWS accounts and OUs. You only need to create this role in the Automation management account. We **recommend** not changing the role name as specified in the template to something besides AWS-SystemsManager-AutomationAdministrationRole. Otherwise, your multi-Region and multi-Account Automation workflows might fail. For more information, see [Running Automation Workflows in Multiple AWS Regions and Accounts](https://docs.aws.amazon.com/systems-manager/latest/userguide/systems-manager-automation-multiple-accounts-and-regions.html). |
-| AWS Systems Manager | Automation Execution Role | This role gives Systems Manager permission to perform actions on your behalf. You must create this role in every account that you want to target to run multi-Region and multi-account Automations. We **recommend** not changing the role name as specified in the template to something besides AWS-SystemsManager-AutomationExecutionRole. Otherwise, your multi-Region and multi-Account Automation workflows might fail. For more information, see [Running Automation Workflows in Multiple AWS Regions and Accounts](https://docs.aws.amazon.com/systems-manager/latest/userguide/systems-manager-automation-multiple-accounts-and-regions.html). |
+| AWS Systems Manager | Automation Execution Role | This role gives Systems Manager permission to perform actions on your behalf. The CloudFormation template in this solution provisions role used to execute the Automation in each region.  |
 | AWS Systems Manager | Resource Data Sync | You can use Systems Manager **resource data sync** to send inventory data collected from all of your managed instances to a single Amazon S3 bucket. Resource data sync then automatically updates the centralized data when new inventory data is collected. For more information, see [Configuring Resource Data Sync for Inventory](https://docs.aws.amazon.com/systems-manager/latest/userguide/sysman-inventory-datasync.html). |
-| AWS Systems Manager | Patch Baseline | A **patch baseline** defines which patches are approved for installation on your instances. You can specify approved or rejected patches one by one. You can also create auto-approval rules to specify that certain types of updates (for example, critical updates) should be automatically approved. The rejected list overrides both the rules and the approve list. For more information, see [About Predefined and Custom Patch Baselines](https://docs.aws.amazon.com/systems-manager/latest/userguide/sysman-patch-baselines.html) |
-| AWS Systems Manager | Patch Group | You can use a **patch group** to associate instances with a specific patch baseline. Patch groups help ensure that you are deploying the appropriate patches, based on the associated patch baseline rules, to the correct set of instances. Patch groups can also help you avoid deploying patches before they have been adequately tested. For example, you can create patch groups for different environments (such as Development, Test, and Production) and register each patch group to an appropriate patch baseline. **Note**: A managed instance can only be in one patch group. You create a patch group by using Amazon EC2 tags or Systems Manager resource tags. Unlike other tagging scenarios across Systems Manager, a patch group **must** be defined with the tag key: **Patch Group**. Note that the key is case-sensitive. You can specify any value, for example ```web servers``` but the key must be **Patch Group**.For more information, see [About Patch Groups](https://docs.aws.amazon.com/systems-manager/latest/userguide/sysman-patch-patchgroups.html). |
-| AWS Systems Manager | Activation Code | To set up servers and virtual machines (VMs) in your hybrid environment as managed instances, you need to create a managed-instance **activation**. After you successfully complete the activation, you immediately receive an **Activation Code** and **Activation ID**. You specify this Code/ID combination when you install SSM Agent on servers and VMs in your hybrid environment. The Code/ID provides secure access to the Systems Manager service from your managed instances. For more information, see [Setting Up AWS Systems Manager for Hybrid Environments](https://docs.aws.amazon.com/systems-manager/latest/userguide/systems-manager-managedinstances.html). |
-| AWS Glue | Crawler | A **crawler** accesses your data store, extracts metadata, and creates table definitions in the AWS Glue Data Catalog.For more information, see [Working with Crawlers on the AWS Glue Console](https://docs.aws.amazon.com/glue/latest/dg/console-crawlers.html). |
+| AWS Systems Manager | Patch Baseline | A **patch baseline** defines which patches are approved for installation on your instances. You can specify approved or rejected patches one by one. You can also create auto-approval rules to specify that certain types of updates (for example, critical updates) should be automatically approved. The rejected list overrides both the rules and the approve list. For more information, see [About Predefined and Custom Patch Baselines](https://docs.aws.amazon.com/systems-manager/latest/userguide/sysman-patch-baselines.html). T**he CloudFormation template in this solution creates a custom patch baseline for each supported OS and automatically sets it as the default patch baseline.** You may wish to customize this or define your own baselines and patch groups in each account separately. |
+| AWS Systems Manager | Patch Group | You can use a **patch group** to associate instances with a specific patch baseline. Patch groups help ensure that you are deploying the appropriate patches, based on the associated patch baseline rules, to the correct set of instances. Patch groups can also help you avoid deploying patches before they have been adequately tested. For example, you can create patch groups for different environments (such as Development, Test, and Production) and register each patch group to an appropriate patch baseline. **Note**: A managed instance can only be in one patch group. You create a patch group by using Amazon EC2 tags or Systems Manager resource tags. Unlike other tagging scenarios across Systems Manager, a patch group **must** be defined with the tag key: **Patch Group**. Note that the key is case-sensitive. You can specify any value, for example ```web servers``` but the key must be **Patch Group**.For more information, see [About Patch Groups](https://docs.aws.amazon.com/systems-manager/latest/userguide/sysman-patch-patchgroups.html). **NOTE: The Cloudformation Templates in this solution DO NOT define any patch groups. You may wish to customize these templates or setup patch groups in your accounts separately. Otherwise, instances will use the default patch baselines as mentioend above.**|
+| AWS Systems Manager | Activation Code | To set up servers and virtual machines (VMs) in your hybrid environment as managed instances, you need to create a managed-instance **activation**. After you successfully complete the activation, you immediately receive an **Activation Code** and **Activation ID**. You specify this Code/ID combination when you install SSM Agent on servers and VMs in your hybrid environment. The Code/ID provides secure access to the Systems Manager service from your managed instances. For more information, see [Setting Up AWS Systems Manager for Hybrid Environments](https://docs.aws.amazon.com/systems-manager/latest/userguide/systems-manager-managedinstances.html). If you are not managing VMs outside AWS, activation codes are not needed. |
+| AWS Glue | Crawler | A **crawler** accesses your data store, extracts metadata, and creates table definitions in the AWS Glue Data Catalog.For more information, see [Working with Crawlers on the AWS Glue Console](https://docs.aws.amazon.com/glue/latest/dg/console-crawlers.html). The CloudFormation templates in this solution will create a Glue crawler that indexes aggregated inventory data stored in S3. |
 
 # Architecture Diagram
 
@@ -58,13 +80,15 @@ In this section, we take a closer look at the following concepts of AWS Systems 
 
 ## Resulting Environment
 
-After deploying the provided CloudFormation templates in the central account and target account(s), you will have a scheduled CloudWatch Event. The CloudWatch Event will then invoke a Lambda function to call a multi-account and multi-region Automation operation for patching managed instances using the Command document ```AWS-RunPatchBaseline```. After the first execution of the CloudWatch Event (based on the schedule provided), patching and the resulting patch compliance data will be available for your targeted managed instances.
+After deploying the `opsmgmt-central-account.yaml` CloudFormation template in the central account, you will have an central account where inventory data is aggregated, as well as a Glue crawler that index inventory data so that it be queries in Athena. 
 
-The default option for the patching operation is to scan for missing updates. You can optionally choose the ```Install``` operation when deploying the CloudFormation template which will scan and install any missing updates on the target managed instances. During the patching operation, the managed instance will scan (or install) patches based on the patch baseline approval rules. For more information, see [About Predefined and Custom Patch Baselines](https://docs.aws.amazon.com/systems-manager/latest/userguide/sysman-patch-baselines.html) and [About Patch Groups](https://docs.aws.amazon.com/systems-manager/latest/userguide/sysman-patch-patchgroups.html). To create a custom patch baseline, see [Create a Custom Patch Baseline](https://docs.aws.amazon.com/systems-manager/latest/userguide/sysman-patch-baseline-console.html).
+Deploying the `opsmgmt-target-account-inventory,yml` template into target accounts and regions will setup a Resource Data Sync that sends instance inventory data to the S3 bucket in the central account. Additionally, a State Manager Association will be created to gather software inventory data (applications installed, AWS components, network configuration, etc.). Compliance data will be reported based on the success of gathering of inventory data (Compliant if the operation completed successfully or non-compliant if the resource did not gather inventory successfully).
 
-Additionally, a State Manager Association will be created to gather software inventory data (applications installed, AWS components, network configuration, etc.). Compliance data will be reported based on the success of gathering of inventory data (Compliant if the operation completed successfully or non-compliant if the resource did not gather inventory successfully).
+Deploying the `opsmgmt-target-account-patching.yaml` template into target accounts and regions will setup default patch baselines for each operating system (these could be customized) and a Systems Manager Automation Document that performs instance patching. The Automation Document will, optionally, automatically start stopped instances, patch them, and then stop them again. Finally, a State Manager Asociation is created that, by default, executions the patching automation on all instances in the account every Saturday at 11:59 PM. 
 
-The patching data, inventory data, and resulting compliance data will then be exported to the centralized S3 bucket via a Resource Data Sync created in each target account. You can then use AWS Glue, Amazon Athena, and Amazon QuickSight to report and visualize this data across your environment.
+During the patching operation, the managed instance will scan (or install) patches based on the patch baseline approval rules. For more information, see [About Predefined and Custom Patch Baselines](https://docs.aws.amazon.com/systems-manager/latest/userguide/sysman-patch-baselines.html) and [About Patch Groups](https://docs.aws.amazon.com/systems-manager/latest/userguide/sysman-patch-patchgroups.html). To create a custom patch baseline, see [Create a Custom Patch Baseline](https://docs.aws.amazon.com/systems-manager/latest/userguide/sysman-patch-baseline-console.html).
+
+The patching data, inventory data, and resulting compliance data will all be aggregated centralized S3 bucket via a Resource Data Sync created in each target account. You can then use AWS Glue, Amazon Athena, and Amazon QuickSight to report and visualize this data across your environment.
 
 ### (Optional) Patch Microsoft Applications
 
@@ -72,23 +96,43 @@ _Note: If you do not intend on patching Microsoft Applications (e.g. Microsoft O
 
 You can configure Patch Baselines to select and apply Microsoft application patches automatically across your Amazon EC2 or on-premises instances. All application patches available in the Microsoft update catalog are supported. For more information, see [About Patching Applications on Windows Server](https://docs.aws.amazon.com/systems-manager/latest/userguide/about-windows-app-patching.html).
 
+**TODO**: Add this as an optional parameter to the template
+
 **Important**: Microsoft application patching is available at no additional charge for EC2 instances and incurs a charge as part of the On-Premises Instance Management advanced tier when used on premises; see the [pricing page](https://aws.amazon.com/systems-manager/pricing/) for details.
 
-## Architecture Workflow
+## Architecture Details
 
-### Patching Process
+### Scheduled Patching
+1. The `opsmgmt-target-account-patching.yaml` template creates a State Manager Association in each account and region that it is deployed in. The association targets all systems in the account and region.
+2. The State Manager Association is configured by default to execute the patching automation document Saturday at 11:59pm on all targeted instances. This can be adjusted by modifying the cron statement when deploying the template.
+3. The automation document runs against each instance in the account.
 
-1. CloudWatch Event triggers based on schedule.
-2. CloudWatch Event rule initiates the Lambda function to call the Automation API ```StartAutomationExecution``` against the targeted accounts and regions.
-3. The Automation workflow is initiated in each target account and region.
-4. The workflow initiates the Run Command document ```AWS-RunPatchBaseline``` with the operation specified.
-5. Results from the Run Command task are outputted to the centralized S3 bucket.
-6. Patch Compliance data is reported to Patch Manager.
-7. The Resource Data Sync takes the Patch Compliance data and outputs to the centralized S3 bucket.
+### Patching Automation Workflow
+![High level flow diagram](images/automation-flow-diagram.png)
+
+For each targeted instance, the automation document performs the following steps:
+1. The automation checks if any instance tags match tag key/value pairs in the `SkipTags` parameter passed to the document. If they do, the automation exits and returns success for that instance.
+2. The automatino checks if an execution is already running on the instance - this is unlikely to happen but if it did it could create conflicts. If the there is already an execution for the instance, the automation exits.
+3. Three tags are written to the instance: 
+   * `InstancePatchingLastBeginTime`: The current timestamp
+   * `InstancePatchingBeginState`: The state of the instance when the automation document began (`stopped` or `running`)
+   * `InstancePatchingLastExecutionId`: The Execution Id of the automation.
+
+  These tags are used for tracking the patching process and validating the workflow completed successfully and the instance has returned to its previous state (`stopped` or `running`) after patching.
+4. If the instance has no profile (IAM role) attached, the automation will (optionally) attach a temporariy instance profile that enables Systems Manager to run commands on the instance and send execution logs to the central S3 bucket. 
+5. If the instance is in a stopped state, the automation will (optionally) start the instance and wait for it to check in (online status) with Systems Manager.
+6. The workflow patches the instance using the Run Command document ```AWS-RunPatchBaseline``` with the operation specified from the execution parameters (`Scan` or `Install`)
+7. Results from the Run Command task are sent to the centralized S3 bucket. Patch Compliance data is reported to Patch Manager.
+8. The workflow (optionally) performs an inventory on the instance by creating a temporary State Manager association that executes the run command `AWS-GatherSoftwareInventory` on the instance. Inventory data is written to Systems Manager Inventory within the region.
+  **Note**: It is recommended that you create State Manager Association for `AWS-GatherSoftwareInventory` in the account to target all instances instead. The approach of creating a temporary association that this workflow uses can affect what inventory data is displayed within the *Inventory* section of the Systems Manager console within the account and region. 
+9.  The workflow checks if the instance was stopped at the beginning of the workflow. If so, it proceeds to stop the instance. 
+  **Important:** The workflow has no way to determine if the instance enters active use during the patching. It is assumed that the workflow will run during a maintenance Window where the instance iwll not be in use. 
+
+10. The tags `InstancePatchingBeginState` and `InstancePatchingLastExecutionId` are removed to indicate the workflow completed. 
 
 ### Inventory Data Gathering Process
 
-1. The State Manager Association triggers using the rate of 1 day to gather software inventory data.
+1. A State Manager Association in each account and region triggers using the rate of 1 day to gather software inventory data. This association is indepent of the patching association and workflow.
 2. The Inventory data is reported to Systems Manager.
 3. The Resource Data Sync takes the Inventory data and outputs to the centralized S3 bucket.
 
@@ -108,13 +152,24 @@ You can configure Patch Baselines to select and apply Microsoft application patc
 
 # Pre-Requisites
 
-Register your EC2 instance or on-premise hybrid instances. For more information, see [Setting Up AWS Systems Manager](https://docs.aws.amazon.com/systems-manager/latest/userguide/systems-manager-setting-up.html) and [Setting Up AWS Systems Manager for Hybrid Environments](https://docs.aws.amazon.com/systems-manager/latest/userguide/systems-manager-managedinstances.html).
+## Register your EC2 instance or on-premise hybrid instances
 
-## Expectations
+For more information, see [Setting Up AWS Systems Manager](https://docs.aws.amazon.com/systems-manager/latest/userguide/systems-manager-setting-up.html) and [Setting Up AWS Systems Manager for Hybrid Environments](https://docs.aws.amazon.com/systems-manager/latest/userguide/systems-manager-managedinstances.html).
 
-1. If applicable, you have registered your on-premise VMs and servers to Systems Manager. For more information, see [Setting Up AWS Systems Manager for Hybrid Environments](https://docs.aws.amazon.com/systems-manager/latest/userguide/systems-manager-managedinstances.html).
+  **Note:** Attaching an instance profile and role with Systems Manager policies attached is a prerequisite for managing EC2 instances with Systems Manager. For EC2 instances that do not currently have an instance profile attached, the patching automation document can attach a *temporary* instance role/profile with Systems Manager permissions to EC2 instances that do not have one. However, there are limitations to this approach:
+  
+  - It will not override an instance profile already attached to an EC2 instance.
+  - Running EC2 instances may not immediately check in with Systems Manager after the temporary profile is attached. In some cases, this can take hours to occur.
+  - Instance profile attachment is not applicable to hybrid managed instances
+  
+  Therefore, it is **strongly recommended** you configure and attach IAM instance profiles, roles, and policies for Systems Manager to instances prior for reliable patching, inventory, and management. If you need automate EC2 instance registration with Systems Manager across your AWS accounts and regions, consider using an [Organization Quick Setup](https://docs.aws.amazon.com/systems-manager/latest/userguide/systems-manager-quick-setup.html). Organization Quick Setup will create automation documents and State Manager associations in each account to automatically attach instance profiles to EC2 instances and (optionally) attach Systems Manager IAM policies to existing instances.
 
-1. For your EC2 instances or if you are using hybrid managed instances (```mi-*```), then you must grant S3 permissions to the central S3 bucket in order to export patching and Inventory execution logs. For more information, see [Step 2: Create an IAM Service Role for a Hybrid Environment](https://docs.aws.amazon.com/systems-manager/latest/userguide/sysman-service-role.html).
+  ### Hybrid managd instances
+  If applicable, you have registered your on-premise VMs and servers to Systems Manager. For more information, see [Setting Up AWS Systems Manager for Hybrid Environments](https://docs.aws.amazon.com/systems-manager/latest/userguide/systems-manager-managedinstances.html).
+
+## Attach IAM policies to EC2 instance profiles for S3
+
+For your EC2 instances or if you are using hybrid managed instances (```mi-*```), if you wish to send execution logs to the execution logs bucket in the central account for auditing and analysis, you must grant S3 permissions to the central S3 bucket in order to export patching and Inventory execution logs. For more information, see [Step 2: Create an IAM Service Role for a Hybrid Environment](https://docs.aws.amazon.com/systems-manager/latest/userguide/sysman-service-role.html).
 
     An example IAM policy snippet is as follows (you must replace the S3 ARN with the ARN of the S3 bucket created by the Central account CFN template):
 
@@ -133,25 +188,10 @@ Register your EC2 instance or on-premise hybrid instances. For more information,
     }
     ```
 
-1. You create patch baselines with the appropriate approval rules and exceptions. For more information, see [About Predefined and Custom Patch Baselines](https://docs.aws.amazon.com/systems-manager/latest/userguide/sysman-patch-baselines.html). To create a custom patch baseline, see [Create a Custom Patch Baseline](https://docs.aws.amazon.com/systems-manager/latest/userguide/sysman-patch-baseline-console.html).
+## (Optional) Create Patch Baselines and Patch Groups in accounts and regions
+You create patch baselines with the appropriate approval rules and exceptions. For more information, see [About Predefined and Custom Patch Baselines](https://docs.aws.amazon.com/systems-manager/latest/userguide/sysman-patch-baselines.html). To create a custom patch baseline, see [Create a Custom Patch Baseline](https://docs.aws.amazon.com/systems-manager/latest/userguide/sysman-patch-baseline-console.html). You can also create [Patch Groups](https://docs.aws.amazon.com/systems-manager/latest/userguide/sysman-patch-patchgroups.html) in each AWS account and region for targeting specific baselines at sets of instances (i.e. by instance tag). 
 
-1. The Automation runbook targets Systems Manager managed instances using Resource Groups. To scan for missing patches or install updates on your managed instances, the resources must be in the targeted Resource Group. For more information, see [Build a Query and Create a Group](https://docs.aws.amazon.com/ARG/latest/userguide/gettingstarted-query.html#gettingstarted-query-console) in the _AWS Resource Groups User Guide_. Please note, the Resource Group must have the exact same name in all target account(s).
-
-## Limitations
-
-### Targeting Limitations
-- You can only target one Resource Group.
-- Multi-account and multi-Region Automation can target AWS Account IDs or AWS Organization OU IDs. If you want to target Organization OU IDs, then the central account CloudFormation stack must be either (1) created within the root Organizations account or (2) created within an account specified as the Delegated Administrator account. An account can be specified as a Delegated Administrator account within the Systems Manager Explorer settings, for more information see [Configuring a Delegated Administrator](https://docs.aws.amazon.com/systems-manager/latest/userguide/Explorer-setup-delegated-administrator.html).
-   - When targeting using Organization OU IDs, you must target the OU which contains AWS accounts IDs directly. You cannot specify an OU which contains further nested OUs. For example, in the following screenshot you can see a simple Organization tree where the ```DEV``` OU contains a single account. When calling a multi-account/multi-Region Automation workflow, you must target the ```DEV``` OU and cannot target parent OUs, such as ```Workloads``` or ```Root```.
-   ![](images/opsmgmt-orgtree.png)
-- To target resource tags instead of Resource Groups, you must modify the Automation document in the CloudFormation template, ```opsmgmt-operations-central-account.yaml```. An example modification is as follows:
-
-```
-  Targets:
-  - Key: 'tag:Name'
-    Values:
-      - !Ref TagValue
-```
+If you do not create custom patch baselines, instances will apply the default patch baselines in the account. The Automation can optionally create and deploy these default patch baselines. To customize the default patch baselines for your needs, you can modify the `opsmgt-target-accounts-patching.yaml` template. 
 
 # Resources Created - Central Account
 
@@ -198,25 +238,9 @@ Amazon Athena Resources:
   - AthenaQueryInstanceList: List non-terminated instances
   - AthenaQueryInstanceApplications: List applications for non-terminated instances
 
-### Resources created by opsmgmt-operations-central-account.yaml
-
-Amazon CloudWatch Resources:
-
-- CWScheduleEventCFN: CloudWatch Event Rule scheduled based on cron or rate expression
-- PermissionForEventsToInvokeLambda: Permissions for CloudWatch Event initiate the Lambda function
-
-AWS Lambda Resources:
-
-- AWSLambdaSSMMultiAccountRole: IAM Service Role for Lambda
-- MultiAccountPatchingLambdaFunction: Lambda Function to invoke MAMR Automation
-
-AWS Systems Manager Resources:
-
-- AutomationDocumentMamrRunPatchBaseline: Automation Document for executing the Command document ```AWS-RunPatchBaseline```
-
 # Resources Created - Target Account(s)
 
-### Resources created by opsmgmt-target-account.yaml
+### Resources created by opsmgmt-target-account-inventory.yaml
 
 **Note**: You can optionally choose to provide an existing IAM role for the Automation Execution role. To confirm this role is configured appropriately, see [Example IAM Policies and Trust Relationships](#example-iam-policies-and-trust-relationships).
 
@@ -226,11 +250,33 @@ AWS Systems Manager Resources:
 - ResourceDataSync: Resource Data Sync
 - InventoryAssociation: State Manager Association for ```AWS-GatherSoftwareInventory```
 
+### Resources created by opsmgmt-target-account-patching.yaml
+
+**Note**: You can optionally choose to provide an existing IAM role for the Automation Execution role. To confirm this role is configured appropriately, see [Example IAM Policies and Trust Relationships](#example-iam-policies-and-trust-relationships).
+
+AWS Systems Manager Resources:
+
+- AutomationExecutionServiceRole: Automation Execution IAM Service Role used to execute the patching automation.
+- An automation document used for patching.
+- A State Manager Association that executes the patching automation document on a schedule.
+- Patch baselines for each supported operating system. Each baselines is configured to install all security patches with an approval time of 0 days. This can be customized if desired.
+- A Lambda-backed custom resource that will configure the patch baselines as the default baselines in the AWS account and region. If the stack is deleted, the custom resource will automatically set the default baselines to the AWS-provided ones.
+
 # Deployment Instructions
 
-## Create the CloudFormation Stacks in the Central Account
+![High level flow diagram](images/deployment-diagram.png)
+In an AWS account designated for central operations, the `opsmgt-operations-central-account.yaml` template will be deployed. 
+
+It is highly recommended that CloudFormation StackSets are used to deploy the `opsmgmt-target-account-inventory.yaml` and `opsmgmt-target-account-patching.yaml` templates to target AWS accounts and regions. 
+
+If you are using AWS Organizations, you can simplify IAM permissions needed to deploy StackSets to other accounts by enabling the [StackSets with service-managed permissions](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/stacksets-orgs-enable-trusted-access.html). You can also delegate permission to deploy StackSets to an account that *is not* the Management account using [StackSets Delegated Administrator](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/stacksets-orgs-delegated-admin.html)
+
+
+## Create the CloudFormation Stack in the Central Account
 
 ### Deploy initial resources using opsmgmt-central-account.yaml
+
+**Note:** This template is deployed as a stack in the central account, *not* as a StackSet. 
 
 1. Open the [CloudFormation console](https://console.aws.amazon.com/cloudformation/)
 1. Select **Create stack** and then **With new resources (standard)**.
@@ -247,54 +293,26 @@ AWS Systems Manager Resources:
 1. Select **I acknowledge that AWS CloudFormation might create IAM resources with custom names**.
 1. Choose **Create stack**.
 
-### Deploy operations resources using opsmgmt-operations-central-account.yaml
 
-1. Open the [CloudFormation console](https://console.aws.amazon.com/cloudformation/)
-1. Select **Create stack** and then **With new resources (standard)**.
-1. Choose **Upload a template file** and select ```opsmgmt-operations-central-account.yaml``` from your local machine.
-1. Choose **Next**.
-1. Enter a stack name.
-1. For the **Parameters** section, enter the following information:
-   1. For **CloudWatchEventRuleSchedule**, enter a cron or rate based expression for the schedule of the CloudWatch Event rule. For example, ```cron(15 22 ? * TUE *)``` will schedule the rule to initiate patching on Tuesdays at 22:15 UTC.
-   1. For **ExecutionLogsBucket**, enter the name of the execution logs bucket created using ```opsmgmt-central-account.yaml```.
-   1. For **ExecutionRoleName**, optionally modify the Automation execution role to be assumed in the target accounts. Note: The next section includes a CloudFormation template which creates the Automation Execution role with the name AWS-SystemsManager-AutomationExecutionRole.
-   1. For **MaximumConcurrency**, specify the maximum number of targets allowed to run this task in parallel. You can specify a y, such as 10, or a percentage, such as 10%. The default value is 10%.
-   1. For **MaximumErrors**, specify the maximum number of errors that are allowed before the system stops running the task on additional targets. You can specify a number, such as 10, or a percentage, such as 10%. The default value is 10%.
-   1. For **ResourceGroupName**, specify the name of the Resource Group that includes the resources you want to target. Important: The Resource Group name is case sensitive.
-   1. For **RunPatchBaselineInstallOverrideList**, optionally enter an https URL or an Amazon S3 path-style URL to the list of patches to be installed. This patch installation list overrides the patches specified by the default patch baseline.
-   1. For **RunPatchBaselineOperation**, choose Scan to scan for missing updates only. Choose Install to scan and install missing updates based on the rules of the patch baseline.
-   1. For **RunPatchBaselineRebootOption**, choose the reboot behavior for the patching operation. The default option, RebootIfNeeded, enforces a reboot if updates are installed. **Important**: Updates are not installed if the Scan operation is selected. Valid options are RebootIfNeeded and NoReboot. For more information, see [AWS-RunPatchBaseline Parameters](https://docs.aws.amazon.com/systems-manager/latest/userguide/patch-manager-about-aws-runpatchbaseline.html#patch-manager-about-aws-runpatchbaseline-parameters).
-   1. For **TargetAccounts**, enter the list of target accounts as a comma-separated list. You can specify AWS Account IDs or AWS Organizations OU IDs. For example:
-   ```012345678901,987654321098,ou-ab12-cdef3456```
-   1. For **TargetLocationMaxConcurrency**, optionally modify the maximum number of AWS accounts and AWS regions allowed to run the Automation concurrently. The default value is 1.
-   1. For **TargetLocationMaxErrors**, optionally modify the maximum number of errors allowed before the system stops queuing additional Automation executions at the account-region pair level. The default value is 1.
-   1. For **TargetRegionIds**, enter the list of target regions as a comma-separated list. For example: ```us-east-1,us-east-2```.
-![](images/opsmgmt-example-operations-central-cfn-picture.png)
-1. Choose **Next**.
-1. Choose **Next**.
-1. Select **I acknowledge that AWS CloudFormation might create IAM resources with custom names**.
-1. Choose **Create stack**.
+## Create the Inventory and Patching CloudFormation StackSets in the Central or Management Account
 
-The stack creation process for the central account will take approximately 5 minutes. Once the status of the stack changes to ```CREATE_COMPLETE```, proceed with the next section.
-
-## Create the CloudFormation StackSet in the Central Account
+## Deploy Inventory StackSet
 
 1. Open the [CloudFormation console](https://console.aws.amazon.com/cloudformation/) in the central account.
 1. From the left navigation pane, choose **StackSets**, and then choose **Create StackSet**.
 1. Select **Create StackSet**.
-1. Choose **Upload a template file** and select ```opsmgmt-target-account.yaml``` from your local machine.
+1. Choose **Upload a template file** and select ```opsmgmt-target-account-inventory.yaml``` from your local machine.
 1. Choose **Next**.
 1. Enter a StackSet name.
 1. For the **Parameters** section, enter the following information:
-   1. For **CentralAccountNumber**, enter the account ID of the account where the central template is deployed.
    1. For **ExecutionLogsS3Bucket**, enter the name of the execution logs S3 bucket created in the central account. The S3 bucket name can be found in the Output tab of the CloudFormation stack in the central account created using the ```opsmgmt-central-account.yaml``` template. The S3 bucket name will follow the format of ssm-execution-logs-region-account-id. For example:
    ```ssm-execution-logs-us-east-1-123456789012```
    1. For **ExecutionLogsS3BucketPrefix**, optionally modify the S3 bucket prefix for the Inventory execution logs.
-   1. For **ExistingAutomationExecutionRole**, optionally enter the ARN of the IAM role that is configured as an execution role for multi-account and multi-Region Automation workflows. **Important**: The name of the IAM role must match the ExecutionRoleName provided in the management account.
-   1. For **ManagedInstanceDataEncryptionKey**, enter the ARN of the KMS key used to encrypt S3 bucket logs. The KMS key ARN can be found in the Output tab of the CloudFormation stack in the central account created using the ```opsmgmt-central-account.yaml``` template. An example KMS key ARN is as follows:
+   2. For **ExistingAutomationExecutionRole**, optionally enter the ARN of the IAM role that is configured as an execution role for multi-account and multi-Region Automation workflows. **Important**: The name of the IAM role must match the ExecutionRoleName provided in the management account.
+   3. For **ManagedInstanceDataEncryptionKey**, enter the ARN of the KMS key used to encrypt S3 bucket logs. The KMS key ARN can be found in the Output tab of the CloudFormation stack in the central account created using the ```opsmgmt-central-account.yaml``` template. An example KMS key ARN is as follows:
    ```arn:aws:kms:us-east-1:123456789012:key/1234abcd-12ab-34cd-56ef-1234567890ab```
    1. For **ResourceDataSyncName**, optionally modify the name used for the Resource Data Sync.
-   1. For **ResourceSyncS3Bucket**, enter the name of the Resource Data Sync S3 bucket that lives in the central account. The S3 bucket name can be found in the Output tab of the CloudFormation stack in the central account created using the ```opsmgmt-central-account.yaml``` template. The S3 bucket name will follow the format of ssm-resource-sync-region-account-id. For example:
+   2. For **ResourceSyncS3Bucket**, enter the name of the Resource Data Sync S3 bucket that lives in the central account. The S3 bucket name can be found in the Output tab of the CloudFormation stack in the central account created using the ```opsmgmt-central-account.yaml``` template. The S3 bucket name will follow the format of ssm-resource-sync-region-account-id. For example:
    ```ssm-resource-sync-us-east-1-123456789012```
    1. For **ResourceSyncS3BucketRegion**, enter the region where the central account S3 bucket is created.
 ![](images/opsmgmt-example-target-cfn-picture.png)
@@ -303,9 +321,41 @@ The stack creation process for the central account will take approximately 5 min
    1. If you do not have AWS Organizations enabled, choose **Self service permissions**, and then choose **Next**.
    1. If you have AWS Organizations enabled, you can choose **Service managed permissions** to apply the StackSets to an organization or OU. For demonstration purposes, this walkthrough will use the **Service managed permissions**, subsequent steps may differ if you choose **Self service permissions**. Choose **Next**.
 1. In the **Set deployment options** page, choose **Deploy to organization units (OUs)** and enter the AWS OU ID where you want to deploy the stackSet.
-1. Optionally modify the **Automatic deployment** and **Account removal behavior** options.
-1. In the **Specify regions** section, choose the region in which you want to deploy stacks. **Important:** Only specify one region for the initial StackSet. If you want to deploy to multiple regions within the same account, then you must create a new StackSet and provide an IAM ARN value for **ExistingAutomationExecutionRole**.
-1. In the **Deployment options** section, optionally modify the values for **Maximum concurrent accounts** and **Failure tolerance**.
+  **IMPORTANT**: It is highly recommended that you test the inventory and patching scripts on a small set of accounts before deploying to larger OUs or across the entire organization. Once initial testing has been done, the StackSets can be updated to change OU, account, and region targeting.
+1. Optionally modify the **Automatic deployment** and **Account removal behavior** options. If you wish to automatically deploy the template to new accounts that join the OU or organization, enable automatic deployment.
+2. In the **Specify regions** section, choose the region in which you want to deploy stacks. 
+3. In the **Deployment options** section, optionally modify the values for **Maximum concurrent accounts** and **Failure tolerance**. When deploying to a large number of accounts and regions, set these values higher to deploy the stacks faster and continue if some accounts or regions encounter errors.
+![](images/opsmgmt-example-target-deployment-cfn-picture.png)
+1. Choose **Next**.
+1. Select **I acknowledge that AWS CloudFormation might create IAM resources with custom names**.
+1. Choose **Submit**.
+
+The StackSet creation process for the target accounts will take some time. Once the status of the StackSet changes to ```ACTIVE``` and the status of each stack instances changes to ```CURRENT```, proceed with the next section.
+
+## Deploy Patching StackSet
+
+1. Open the [CloudFormation console](https://console.aws.amazon.com/cloudformation/) in the central account.
+1. From the left navigation pane, choose **StackSets**, and then choose **Create StackSet**.
+1. Select **Create StackSet**.
+1. Choose **Upload a template file** and select ```opsmgmt-target-account-patching.yaml``` from your local machine.
+1. Choose **Next**.
+1. Enter a StackSet name.
+1. For the **Parameters** section, enter the following information:
+   1. For **ExecutionLogsS3Bucket**, enter the name of the execution logs S3 bucket created in the central account. The S3 bucket name can be found in the Output tab of the CloudFormation stack in the central account created using the ```opsmgmt-central-account.yaml``` template. The S3 bucket name will follow the format of ssm-execution-logs-region-account-id. For example:
+   ```ssm-execution-logs-us-east-1-123456789012```
+   1. For **PatchingExecutionLogsS3BucketPrefix**, optionally modify the S3 bucket prefix for the Patching execution logs.
+   1. For **InventoryExecutionLogsS3BucketPrefix**, optionally modify the S3 bucket prefix for the Inventory execution logs.
+   1. Configure the rest of the parameters in the template, according to their descriptions. 
+1. Choose **Next**.
+1. On the **Configure StackSet options** page, add any required tags. The content of the **Permissions** section varies, depending on whether you have AWS Organizations enabled: 
+   1. If you do not have AWS Organizations enabled, choose **Self service permissions**, and then choose **Next**.
+   2. If you have AWS Organizations enabled, you can choose **Service managed permissions** to apply the StackSets to an organization or OU. For demonstration purposes, this walkthrough will use the **Service managed permissions**, subsequent steps may differ if you choose **Self service permissions**. Choose **Next**.
+1. In the **Set deployment options** page, choose **Deploy to organization units (OUs)** and enter the AWS OU ID where you want to deploy the stackSet.
+
+    **IMPORTANT**: It is highly recommended that you test the inventory and patching scripts on a small set of accounts before deploying to larger OUs or across the entire organization. Once initial testing has been done, the StackSets can be updated to change OU, account, and region targeting.
+5. Optionally modify the **Automatic deployment** and **Account removal behavior** options. If you wish to automatically deploy the template to new accounts that join the OU or organization, enable automatic deployment.
+6. In the **Specify regions** section, choose the region in which you want to deploy stacks. 
+7. In the **Deployment options** section, optionally modify the values for **Maximum concurrent accounts** and **Failure tolerance**. When deploying to a large number of accounts and regions, set these values higher to deploy the stacks faster and continue if some accounts or regions encounter errors.
 ![](images/opsmgmt-example-target-deployment-cfn-picture.png)
 1. Choose **Next**.
 1. Select **I acknowledge that AWS CloudFormation might create IAM resources with custom names**.
