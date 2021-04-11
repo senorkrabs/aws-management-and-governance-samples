@@ -1,3 +1,18 @@
 {
-    "python.pythonPath": "/usr/local/bin/python3"
+    "python.pythonPath": "/usr/local/bin/python3",
+    "cSpell.words": [
+        "accountid",
+        "baseline",
+        "centos",
+        "executionid",
+        "mamr",
+        "opsmgmt",
+        "opsmgt",
+        "patch",
+        "redhat",
+        "spdx",
+        "stackset",
+        "stacksets",
+        "walkthrough"
+    ]
 }

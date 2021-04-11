@@ -78,6 +78,11 @@ Parameters:
     Type: String
     Default: cron(59 23 ? * SAT *)
     Description: The cron schedule expression used for patching. TIMES ARE IN UTC. Default is every Saturday at 11:59 PM UTC. https://docs.aws.amazon.com/systems-manager/latest/userguide/reference-cron-and-rate-expressions.html
+  PatchingMaxConcurrency:
+    Type: String
+    AllowedPattern: ^([1-9][0-9]*|[1-9][0-9]%|[1-9]%|100%)$
+    Description: The maximum number of instances in the account/region to apply the automation to concurrently. Can be a percentage or a number. Adjust this number if any throttling errors occur.
+    Default:  100
   GatherInventory:
     Type: String
     Default: 'false'
@@ -129,7 +134,7 @@ Metadata:
           - GatherInventory
           - AutoAttachInstanceProfile
           - PatchingTimeoutSeconds
-          - PatchingRetries
+          - PatchingAttempts
           - InstanceOnlineTimeoutSeconds
       - 
         Label: 
@@ -1040,7 +1045,7 @@ Resources:
                 - Variable: '{{GetInstanceState.State}}'
                   EqualsIgnoreCase: stopped
                   NextStep: StopInstance
-              Default: UntagInstanceState
+              Default: choiceDisassociateInstanceProfile
             description: 'If the instance was previously stopped, go to StopInstance step. Otherwise, skip StopInstance step and go to UntagInstanceState.'
           - name: StopInstance
             action: 'aws:changeInstanceState' 
@@ -1177,6 +1182,7 @@ Resources:
       ScheduleExpression: !Sub '${PatchSchedule}'
       AutomationTargetParameterName: InstanceId      
       ApplyOnlyAtCronInterval: True
+      MaxConcurrency: !Ref PatchingMaxConcurrency
       AssociationName: !Sub Patching-${AWS::AccountId}-${AWS::Region}
       Parameters:
         AutomationAssumeRole: 

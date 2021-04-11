@@ -31,13 +31,6 @@ Description: AWS CloudFormation template to launch instances for Inventory, Patc
 # Parameters
 #-----------------------------------------------------------
 Parameters :
-  ExecutionLogsS3Bucket :
-    Type : 'String'
-    Description: 'Name of the execution logs S3 bucket that lives in the central account.'
-  ExistingManagedInstanceProfile : 
-    Type : 'String'
-    Description : "(Optional) The name of the IAM Instance Profile that grants permissions to AWS Systems Manager."
-    Default: ''
   LatestWindowsAmiId :
     # Use public Systems Manager Parameter
     Type : 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
@@ -46,73 +39,24 @@ Parameters :
     # Use public Systems Manager Parameter
     Type : 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
     Default: '/aws/service/ami-amazon-linux-latest/amzn-ami-hvm-x86_64-gp2'
+  LatestAmazonLinux2AmiId :
+    # Use public Systems Manager Parameter
+    Type : 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'    
+  InstanceType:    
+    Type: String
+    Description: The instance type to provision.
+    AllowedValues: [t3.micro, t3.nano, t4g.nano, t3a.nano]
+    Default: t3a.nano
+  InstancesPerOS:
+    Type: Number
+    Description: The number of instances to create for each OS that will be deployed by the template. 
+    Default: 3
+  
 
-Conditions:
-  CreateManagedInstanceProfileCondition:
-    Fn::Equals:
-    - Ref: ExistingManagedInstanceProfile
-    - ''
+
 
 Resources:
-
-  #-------------------------------------------------
-  # Resource Group to target for multi-account/multi-Region Automation
-  #-------------------------------------------------
-  WebServersRG:
-    Type: AWS::ResourceGroups::Group
-    Properties: 
-      Description: 'This is a test Resource Group'
-      Name: WebServers
-      ResourceQuery: 
-        Type: "TAG_FILTERS_1_0"
-        Query: 
-          ResourceTypeFilters:
-           - "AWS::AllSupported"
-          TagFilters:
-            -
-              Key: "Patch"
-              Values: 
-                - "True"
-
-  #-------------------------------------------------
-  # IAM role and instance profile to enable Systems Manager registration on EC2 instances
-  #-------------------------------------------------
-  ManagedInstanceRole:
-    Type: AWS::IAM::Role
-    Condition: CreateManagedInstanceProfileCondition
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-        - Effect: Allow
-          Principal:
-            Service:
-            - ec2.amazonaws.com
-          Action: sts:AssumeRole
-      ManagedPolicyArns:
-      - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
-      Path: "/"
-      Policies:
-      - PolicyName: CentralAccountS3Permissions
-        PolicyDocument:
-          Version: '2012-10-17'
-          Statement:
-          - Effect: Allow
-            Action:
-            - s3:GetObject
-            - s3:PutObject
-            - s3:PutObjectAcl
-            Resource: 
-              - !Join [ '', ['arn:aws:s3:::', !Ref 'ExecutionLogsS3Bucket'] ]
-              - !Join [ '', ['arn:aws:s3:::', !Ref 'ExecutionLogsS3Bucket', '/*'] ]
-  ManagedInstanceProfile:
-    Type: AWS::IAM::InstanceProfile
-    Condition: CreateManagedInstanceProfileCondition
-    Properties:
-      Path: "/"
-      Roles:
-      - !Ref ManagedInstanceRole
-      InstanceProfileName: ManagedInstanceProfile 
 
   #-------------------------------------------------
   # VPC and required resources to enable network connectivity to AWS Systems Manager
@@ -203,7 +147,7 @@ Resources:
       GroupDescription: "Security Group for Automation patching test instances"
       GroupName: Automation-CF
       SecurityGroupEgress: 
-        - IpProtocol: -1
+        - IpProtocol: '-1'
           FromPort: 0
           ToPort: 65535
           CidrIp: 0.0.0.0/0
@@ -211,14 +155,121 @@ Resources:
         - Key: Name
           Value: Automation-CF
       VpcId: !Ref VPC
-      
-  #-------------------------------------------------
-  # Linux and Windows test EC2 instances using the latest versions of Amazon Linux and Windows 2019
-  #-------------------------------------------------
+  
+
+
+  AmazonLinux2LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        DisableApiTermination: false
+        ImageId: !Ref LatestAmazonLinux2AmiId
+        InstanceType: !Ref InstanceType
+        NetworkInterfaces: 
+          - AssociatePublicIpAddress: True
+            DeviceIndex: 0
+            SubnetId: 
+              Ref: "SubnetPublic"      
+            Groups: 
+              - Ref: "InstanceSecurityGroup"   
+        InstanceInitiatedShutdownBehavior: terminate
+      TagSpecifications:
+        - ResourceType: launch-template
+          Tags:
+            - Key: Name
+              Value: !Sub ${AWS::StackName}-AmazonLinux2        
+  AmazonLinux2ASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier: 
+        - !Ref SubnetPublic
+      LaunchTemplate:
+        LaunchTemplateId: !Ref AmazonLinux2LaunchTemplate
+        Version: !GetAtt AmazonLinux2LaunchTemplate.LatestVersionNumber
+      MinSize: '0'
+      MaxSize: !Ref InstancesPerOS
+      DesiredCapacity: !Ref InstancesPerOS
+      Tags:
+        - Key: Name
+          PropagateAtLaunch: True
+          Value: !Sub ${AWS::StackName}-AmazonLinux2
+
+  AmazonLinuxLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        DisableApiTermination: false
+        ImageId: !Ref LatestAmazonLinuxAmiId
+        InstanceType: !Ref InstanceType
+        NetworkInterfaces: 
+          - AssociatePublicIpAddress: True
+            DeviceIndex: 0
+            SubnetId: 
+              Ref: "SubnetPublic"      
+            Groups: 
+              - Ref: "InstanceSecurityGroup"            
+        InstanceInitiatedShutdownBehavior: terminate
+      TagSpecifications:
+        - ResourceType: launch-template
+          Tags:
+            - Key: Name
+              Value: !Sub ${AWS::StackName}-AmazonLinux        
+  AmazonLinuxASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier: 
+        - !Ref SubnetPublic
+      LaunchTemplate:
+        LaunchTemplateId: !Ref AmazonLinuxLaunchTemplate
+        Version: !GetAtt AmazonLinuxLaunchTemplate.LatestVersionNumber
+      MinSize: '0'
+      MaxSize: !Ref InstancesPerOS
+      DesiredCapacity: !Ref InstancesPerOS    
+      Tags:
+        - Key: Name
+          PropagateAtLaunch: True
+          Value:  !Sub ${AWS::StackName}-AmazonLinux
+
+  WindowsLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        DisableApiTermination: false
+        ImageId: !Ref LatestWindowsAmiId
+        InstanceType: !Ref InstanceType
+        NetworkInterfaces: 
+          - AssociatePublicIpAddress: True
+            DeviceIndex: 0
+            SubnetId: 
+              Ref: "SubnetPublic"      
+            Groups: 
+              - Ref: "InstanceSecurityGroup"                  
+        InstanceInitiatedShutdownBehavior: terminate
+      TagSpecifications:
+        - ResourceType: launch-template
+          Tags:
+            - Key: Name
+              Value: !Sub ${AWS::StackName}-Windows
+  WindowsASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier: 
+        - !Ref SubnetPublic
+      LaunchTemplate:
+        LaunchTemplateId: !Ref WindowsLaunchTemplate
+        Version: !GetAtt WindowsLaunchTemplate.LatestVersionNumber        
+      MinSize: '0'
+      MaxSize: !Ref InstancesPerOS
+      DesiredCapacity: !Ref InstancesPerOS
+      Tags:
+        - Key: Name
+          PropagateAtLaunch: True
+          Value: !Sub ${AWS::StackName}-Windows
+
   LinuxEc2Instance: 
     Type: AWS::EC2::Instance
     Properties: 
-      InstanceType: t2.small
+      InstanceType: !Ref InstanceType
       ImageId: !Ref LatestAmazonLinuxAmiId
       NetworkInterfaces: 
         - AssociatePublicIpAddress: True
@@ -227,22 +278,17 @@ Resources:
             - Ref: "InstanceSecurityGroup"
           SubnetId: 
             Ref: "SubnetPublic"
-      IamInstanceProfile: 
-         Fn::If:
-          - CreateManagedInstanceProfileCondition
-          - !Ref ManagedInstanceProfile
-          - !Ref ExistingManagedInstanceProfile
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          shutdown -h +2
       Tags:
         - Key: Name
-          Value: AmazonLinux
-        - Key: Patch
-          Value: 'True'
-        - Key: 'Patch Group'
-          Value: 'CustomAmazonLinux'
+          Value: !Sub ${AWS::StackName}-AmazonLinux-StoppedTest
   WindowsEc2Instance: 
     Type: AWS::EC2::Instance
     Properties: 
-      InstanceType: t2.small
+      InstanceType: !Ref InstanceType
       ImageId: !Ref LatestWindowsAmiId
       NetworkInterfaces: 
         - AssociatePublicIpAddress: True
@@ -251,15 +297,12 @@ Resources:
             - Ref: "InstanceSecurityGroup"
           SubnetId: 
             Ref: "SubnetPublic"
-      IamInstanceProfile: 
-         Fn::If:
-          - CreateManagedInstanceProfileCondition
-          - !Ref ManagedInstanceProfile
-          - !Ref ExistingManagedInstanceProfile
+      UserData:
+        Fn::Base64: !Sub |
+          <script>
+          shutdown.exe -t 180 -f  
+          </script>        
+     
       Tags:
         - Key: Name
-          Value: Windows
-        - Key: Patch
-          Value: 'True'
-        - Key: 'Patch Group'
-          Value: 'CustomWindows'
+          Value: !Sub ${AWS::StackName}-Windows-StoppedTest

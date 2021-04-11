@@ -2,7 +2,7 @@
 
 # Overview
 
-The purpose of this series of CloudFormation templates is to setup a scheduled multi-account and multi-Region (MAMR) patching operation using Systems Manager. In addition to running patching commands on instances,  the Systems Manager automation orchestrates temporarily starting of stopped instances so they can be patched.. 
+The purpose of this series of CloudFormation templates is to setup a scheduled multi-account and multi-Region (MAMR) patching operation using Systems Manager. In addition to running patching commands on instances, the Systems Manager automation can temporarily any stopped stopped EC2 instances so they can be patched.
 
 Additionally, Systems Manager Inventory is enabled using a State Manager association. The patching, inventory, and compliance data gathered can then be queried and reported on using Amazon Athena or Amazon QuickSight.
 
@@ -20,9 +20,9 @@ Additionally, Systems Manager Inventory is enabled using a State Manager associa
     - [Patching Automation Workflow](#patching-automation-workflow)
     - [Inventory Data Gathering Process](#inventory-data-gathering-process)
   - [Architecture Notes](#architecture-notes)
-- [Pre-Requisites](#pre-requisites)
+- [Prerequisites](#prerequisites)
   - [Register your EC2 instance or on-premise hybrid instances](#register-your-ec2-instance-or-on-premise-hybrid-instances)
-    - [Hybrid managd instances](#hybrid-managd-instances)
+    - [Hybrid managed instances](#hybrid-managed-instances)
   - [Attach IAM policies to EC2 instance profiles for S3](#attach-iam-policies-to-ec2-instance-profiles-for-s3)
   - [(Optional) Create Patch Baselines and Patch Groups in accounts and regions](#optional-create-patch-baselines-and-patch-groups-in-accounts-and-regions)
 - [Resources Created - Central Account](#resources-created---central-account)
@@ -70,7 +70,7 @@ In this section, we take a closer look at the following concepts of AWS Systems 
 | AWS Systems Manager | Automation Execution Role | This role gives Systems Manager permission to perform actions on your behalf. The CloudFormation template in this solution provisions role used to execute the Automation in each region.  |
 | AWS Systems Manager | Resource Data Sync | You can use Systems Manager **resource data sync** to send inventory data collected from all of your managed instances to a single Amazon S3 bucket. Resource data sync then automatically updates the centralized data when new inventory data is collected. For more information, see [Configuring Resource Data Sync for Inventory](https://docs.aws.amazon.com/systems-manager/latest/userguide/sysman-inventory-datasync.html). |
 | AWS Systems Manager | Patch Baseline | A **patch baseline** defines which patches are approved for installation on your instances. You can specify approved or rejected patches one by one. You can also create auto-approval rules to specify that certain types of updates (for example, critical updates) should be automatically approved. The rejected list overrides both the rules and the approve list. For more information, see [About Predefined and Custom Patch Baselines](https://docs.aws.amazon.com/systems-manager/latest/userguide/sysman-patch-baselines.html). T**he CloudFormation template in this solution creates a custom patch baseline for each supported OS and automatically sets it as the default patch baseline.** You may wish to customize this or define your own baselines and patch groups in each account separately. |
-| AWS Systems Manager | Patch Group | You can use a **patch group** to associate instances with a specific patch baseline. Patch groups help ensure that you are deploying the appropriate patches, based on the associated patch baseline rules, to the correct set of instances. Patch groups can also help you avoid deploying patches before they have been adequately tested. For example, you can create patch groups for different environments (such as Development, Test, and Production) and register each patch group to an appropriate patch baseline. **Note**: A managed instance can only be in one patch group. You create a patch group by using Amazon EC2 tags or Systems Manager resource tags. Unlike other tagging scenarios across Systems Manager, a patch group **must** be defined with the tag key: **Patch Group**. Note that the key is case-sensitive. You can specify any value, for example ```web servers``` but the key must be **Patch Group**.For more information, see [About Patch Groups](https://docs.aws.amazon.com/systems-manager/latest/userguide/sysman-patch-patchgroups.html). **NOTE: The Cloudformation Templates in this solution DO NOT define any patch groups. You may wish to customize these templates or setup patch groups in your accounts separately. Otherwise, instances will use the default patch baselines as mentioend above.**|
+| AWS Systems Manager | Patch Group | You can use a **patch group** to associate instances with a specific patch baseline. Patch groups help ensure that you are deploying the appropriate patches, based on the associated patch baseline rules, to the correct set of instances. Patch groups can also help you avoid deploying patches before they have been adequately tested. For example, you can create patch groups for different environments (such as Development, Test, and Production) and register each patch group to an appropriate patch baseline. **Note**: A managed instance can only be in one patch group. You create a patch group by using Amazon EC2 tags or Systems Manager resource tags. Unlike other tagging scenarios across Systems Manager, a patch group **must** be defined with the tag key: **Patch Group**. Note that the key is case-sensitive. You can specify any value, for example ```web servers``` but the key must be **Patch Group**.For more information, see [About Patch Groups](https://docs.aws.amazon.com/systems-manager/latest/userguide/sysman-patch-patchgroups.html). **NOTE: The Cloudformation Templates in this solution DO NOT define any patch groups. You may wish to customize these templates or setup patch groups in your accounts separately. Otherwise, instances will use the default patch baselines as mentioned above.**|
 | AWS Systems Manager | Activation Code | To set up servers and virtual machines (VMs) in your hybrid environment as managed instances, you need to create a managed-instance **activation**. After you successfully complete the activation, you immediately receive an **Activation Code** and **Activation ID**. You specify this Code/ID combination when you install SSM Agent on servers and VMs in your hybrid environment. The Code/ID provides secure access to the Systems Manager service from your managed instances. For more information, see [Setting Up AWS Systems Manager for Hybrid Environments](https://docs.aws.amazon.com/systems-manager/latest/userguide/systems-manager-managedinstances.html). If you are not managing VMs outside AWS, activation codes are not needed. |
 | AWS Glue | Crawler | A **crawler** accesses your data store, extracts metadata, and creates table definitions in the AWS Glue Data Catalog.For more information, see [Working with Crawlers on the AWS Glue Console](https://docs.aws.amazon.com/glue/latest/dg/console-crawlers.html). The CloudFormation templates in this solution will create a Glue crawler that indexes aggregated inventory data stored in S3. |
 
@@ -84,7 +84,7 @@ After deploying the `opsmgmt-central-account.yaml` CloudFormation template in th
 
 Deploying the `opsmgmt-target-account-inventory,yml` template into target accounts and regions will setup a Resource Data Sync that sends instance inventory data to the S3 bucket in the central account. Additionally, a State Manager Association will be created to gather software inventory data (applications installed, AWS components, network configuration, etc.). Compliance data will be reported based on the success of gathering of inventory data (Compliant if the operation completed successfully or non-compliant if the resource did not gather inventory successfully).
 
-Deploying the `opsmgmt-target-account-patching.yaml` template into target accounts and regions will setup default patch baselines for each operating system (these could be customized) and a Systems Manager Automation Document that performs instance patching. The Automation Document will, optionally, automatically start stopped instances, patch them, and then stop them again. Finally, a State Manager Asociation is created that, by default, executions the patching automation on all instances in the account every Saturday at 11:59 PM. 
+Deploying the `opsmgmt-target-account-patching.yaml` template into target accounts and regions will setup default patch baselines for each operating system (these could be customized) and a Systems Manager Automation Document that performs instance patching. The Automation Document will, optionally, automatically start stopped instances, patch them, and then stop them again. Finally, a State Manager Association is created that, by default, executions the patching automation on all instances in the account every Saturday at 11:59 PM. 
 
 During the patching operation, the managed instance will scan (or install) patches based on the patch baseline approval rules. For more information, see [About Predefined and Custom Patch Baselines](https://docs.aws.amazon.com/systems-manager/latest/userguide/sysman-patch-baselines.html) and [About Patch Groups](https://docs.aws.amazon.com/systems-manager/latest/userguide/sysman-patch-patchgroups.html). To create a custom patch baseline, see [Create a Custom Patch Baseline](https://docs.aws.amazon.com/systems-manager/latest/userguide/sysman-patch-baseline-console.html).
 
@@ -110,29 +110,32 @@ You can configure Patch Baselines to select and apply Microsoft application patc
 ### Patching Automation Workflow
 ![High level flow diagram](images/automation-flow-diagram.png)
 
+**Note:** This diagram does not depict all individual steps in the automation.
+
 For each targeted instance, the automation document performs the following steps:
 1. The automation checks if any instance tags match tag key/value pairs in the `SkipTags` parameter passed to the document. If they do, the automation exits and returns success for that instance.
-2. The automatino checks if an execution is already running on the instance - this is unlikely to happen but if it did it could create conflicts. If the there is already an execution for the instance, the automation exits.
+2. The automation checks if an execution is already running on the instance - this is unlikely to happen but if it did it could create conflicts. If the there is already an execution for the instance, the automation exits.
 3. Three tags are written to the instance: 
    * `InstancePatchingLastBeginTime`: The current timestamp
    * `InstancePatchingBeginState`: The state of the instance when the automation document began (`stopped` or `running`)
    * `InstancePatchingLastExecutionId`: The Execution Id of the automation.
 
-  These tags are used for tracking the patching process and validating the workflow completed successfully and the instance has returned to its previous state (`stopped` or `running`) after patching.
-4. If the instance has no profile (IAM role) attached, the automation will (optionally) attach a temporariy instance profile that enables Systems Manager to run commands on the instance and send execution logs to the central S3 bucket. 
+    These tags are used for tracking the patching process and validating the workflow completed successfully and the instance has returned to its previous state (`stopped` or `running`) after patching.
+
+4. If the instance has no profile (IAM role) attached, the automation will (optionally) attach a temporarily instance profile that enables Systems Manager to run commands on the instance and send execution logs to the central S3 bucket. 
 5. If the instance is in a stopped state, the automation will (optionally) start the instance and wait for it to check in (online status) with Systems Manager.
 6. The workflow patches the instance using the Run Command document ```AWS-RunPatchBaseline``` with the operation specified from the execution parameters (`Scan` or `Install`)
 7. Results from the Run Command task are sent to the centralized S3 bucket. Patch Compliance data is reported to Patch Manager.
 8. The workflow (optionally) performs an inventory on the instance by creating a temporary State Manager association that executes the run command `AWS-GatherSoftwareInventory` on the instance. Inventory data is written to Systems Manager Inventory within the region.
   **Note**: It is recommended that you create State Manager Association for `AWS-GatherSoftwareInventory` in the account to target all instances instead. The approach of creating a temporary association that this workflow uses can affect what inventory data is displayed within the *Inventory* section of the Systems Manager console within the account and region. 
 9.  The workflow checks if the instance was stopped at the beginning of the workflow. If so, it proceeds to stop the instance. 
-  **Important:** The workflow has no way to determine if the instance enters active use during the patching. It is assumed that the workflow will run during a maintenance Window where the instance iwll not be in use. 
+  **Important:** The workflow has no way to determine if the instance enters active use during the patching. It is assumed that the workflow will run during a maintenance Window where the instance will not be in use. 
 
 10. The tags `InstancePatchingBeginState` and `InstancePatchingLastExecutionId` are removed to indicate the workflow completed. 
 
 ### Inventory Data Gathering Process
 
-1. A State Manager Association in each account and region triggers using the rate of 1 day to gather software inventory data. This association is indepent of the patching association and workflow.
+1. A State Manager Association in each account and region triggers using the rate of 1 day to gather software inventory data. This association is independent of the patching association and workflow.
 2. The Inventory data is reported to Systems Manager.
 3. The Resource Data Sync takes the Inventory data and outputs to the centralized S3 bucket.
 
@@ -150,7 +153,7 @@ For each targeted instance, the automation document performs the following steps
 
 - The Glue Crawler is configured to run once a day at 00:00 UTC.
 
-# Pre-Requisites
+# Prerequisites
 
 ## Register your EC2 instance or on-premise hybrid instances
 
@@ -164,7 +167,7 @@ For more information, see [Setting Up AWS Systems Manager](https://docs.aws.amaz
   
   Therefore, it is **strongly recommended** you configure and attach IAM instance profiles, roles, and policies for Systems Manager to instances prior for reliable patching, inventory, and management. If you need automate EC2 instance registration with Systems Manager across your AWS accounts and regions, consider using an [Organization Quick Setup](https://docs.aws.amazon.com/systems-manager/latest/userguide/systems-manager-quick-setup.html). Organization Quick Setup will create automation documents and State Manager associations in each account to automatically attach instance profiles to EC2 instances and (optionally) attach Systems Manager IAM policies to existing instances.
 
-  ### Hybrid managd instances
+  ### Hybrid managed instances
   If applicable, you have registered your on-premise VMs and servers to Systems Manager. For more information, see [Setting Up AWS Systems Manager for Hybrid Environments](https://docs.aws.amazon.com/systems-manager/latest/userguide/systems-manager-managedinstances.html).
 
 ## Attach IAM policies to EC2 instance profiles for S3
@@ -199,8 +202,8 @@ If you do not create custom patch baselines, instances will apply the default pa
 
 Amazon S3 Resources:
 
-- ResouceSyncBucket: S3 Bucket for Resource Data Sync to gather Systems Manager Inventory, Patching, and Compliance data across accounts and regions. Example name: ```ssm-resource-sync-us-east-1-123456789012```
-- ResouceSyncBucketPolicy: S3 Bucket Policy for Resource Data Sync bucket to permit Systems Manager access across organization
+- ResourceSyncBucket: S3 Bucket for Resource Data Sync to gather Systems Manager Inventory, Patching, and Compliance data across accounts and regions. Example name: ```ssm-resource-sync-us-east-1-123456789012```
+- ResourceSyncBucketPolicy: S3 Bucket Policy for Resource Data Sync bucket to permit Systems Manager access across organization
 - ExecutionLogsBucket: S3 Bucket for execution logs to store execution logs generated by patching and inventory data gathering operations across accounts and regions. Example name: ```ssm-execution-logs-us-east-1-123456789012```
 - ExecutionLogsBucketPolicy: S3 Bucket Policy to permit access across organization
 - AthenaQueryResultsBucket: S3 Bucket to store Athena query details
@@ -265,6 +268,7 @@ AWS Systems Manager Resources:
 # Deployment Instructions
 
 ![High level flow diagram](images/deployment-diagram.png)
+
 In an AWS account designated for central operations, the `opsmgt-operations-central-account.yaml` template will be deployed. 
 
 It is highly recommended that CloudFormation StackSets are used to deploy the `opsmgmt-target-account-inventory.yaml` and `opsmgmt-target-account-patching.yaml` templates to target AWS accounts and regions. 
@@ -397,7 +401,7 @@ Repeat the above process to deploy instances to multiple accounts and Regions. *
 
 **Note**: Inventory data is gathered immediately for matching managed instances. Patch data (and the resulting compliance data specific to patching) will be gathered following the first invocation of the CloudWatch Event which is based on the schedule specified when creating the CloudFormation stack.
 
-The AWS Glue Crawler is configured to run once a day. The first run will occur on the next occurence of 00:00 UTC following the creation of the CloudFormation stack. If you would like to review data within Athena prior to this time, you must manually run the Glue Crawler.
+The AWS Glue Crawler is configured to run once a day. The first run will occur on the next occurrence of 00:00 UTC following the creation of the CloudFormation stack. If you would like to review data within Athena prior to this time, you must manually run the Glue Crawler.
 
 1. In the central account, open the [AWS Glue console](https://console.aws.amazon.com/glue/home).
 1. Select **Crawlers** in the left-hand navigation pane.
@@ -432,7 +436,7 @@ Following the successful run of the Crawler in the previous section, you can opt
    - **QuerySSMAgentVersion** - List SSM Agent versions installed on managed instances.
    - **QueryInstanceList** - List non-terminated instances.
    - **QueryInstanceApplications** - List applications for non-terminated instances.
-1. After selecting a named query, ensure the ```ssm_global_resource_sync``` databse is selected.
+1. After selecting a named query, ensure the ```ssm_global_resource_sync``` database is selected.
 1. Next, select **Run query** and view the results.
 1. Optionally, select the **History** tab and select **Download results** to receive a CSV formatted output of the results.
 
