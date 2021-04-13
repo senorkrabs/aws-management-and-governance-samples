@@ -135,7 +135,7 @@ Resources:
   LambdaEC2CustomInventory:
     Type: AWS::Lambda::Function
     Properties:
-      Description: Cloudformation Custom Resource function used to register default patch baselines
+      Description: Retrieves EC2 instance details and writes to S3 for inventory
       Handler: index.script_handler
       Role: !GetAtt LambdaCustomEC2InventoryRole.Arn
       Code:
