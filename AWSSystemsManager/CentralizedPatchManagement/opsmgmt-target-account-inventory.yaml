@@ -61,7 +61,7 @@ Metadata:
     ParameterGroups: 
       - 
         Label: 
-          default: "Central Logging and Invetory"
+          default: "Central Logging and Inventory"
         Parameters: 
           - ExecutionLogsS3Bucket
           - ExecutionLogsS3BucketPrefix
@@ -71,7 +71,7 @@ Metadata:
         Parameters: 
           - ResourceSyncS3Bucket
           - ResourceSyncS3BucketRegion
-          - ResourceDataSyncName   
+          - ResourceDataSyncName
           - ManagedInstanceDataEncryptionKey
 
 Resources:
@@ -129,4 +129,148 @@ Resources:
         KMSKeyArn: !Ref ManagedInstanceDataEncryptionKey
         SyncFormat: 'JsonSerDe'
 
+  #-------------------------------------------------
+  # Custom EC2 Inventory automation document for gathering details about EC2 instances in the account/region and writing them to an S3 bucket as JSON objects.
+  #-------------------------------------------------
+  CustomEC2Inventory:
+    Type: AWS::SSM::Document
+    Properties:
+      DocumentType: Automation
+      Content: 
+        description: | 
+          # Custom EC2 Inventory Sync 
+          This automation captures EC2 instance details and writes them to an S3 bucket as JSON objects. The automation executes a script that calls
+          EC2.DescribeInstances and writes a JSON object for each instance containing its details. The purpose of this automation is to supplement 
+          the data aggregated by Systems Manager Inventory and Resource Data Syncs, which only contains details of managed instances. By writing this
+          data alongside Resource Data Sync data and crawling it, it is possible to identify unmanaged instances and also get a more accurate account
+          of instance status.
+        assumeRole: "{{AutomationAssumeRole}}"
+        schemaVersion: '0.3'
+        parameters:
+          AutomationAssumeRole:
+            type: String  
+          S3Bucket:
+            type: String
+            description: The S3 bucket where EC2 inventory data will be written to.
+          S3Prefix:
+            type: String
+            description: The prefix (path) in the S3 bucket where the EC2 inventory data will be written to.
+        mainSteps:    
+          - name: CheckForSkippedTags
+            action: 'aws:executeScript'
+            inputs:
+              Runtime: python3.7
+              Handler: script_handler
+              Script: |-
+                import boto3
+                import json
+                ec2 = boto3.client('ec2')
+                s3 = boto3.client('s3')
 
+
+                def type_converter(obj):
+                    return str(obj)
+
+                def script_handler(events, context):
+                    bucket=events['S3Bucket']
+                    prefix=events['S3Prefix']
+                    errors =False
+                    
+                    paginator = ec2.get_paginator('describe_instances')
+                    pages = paginator.paginate(
+                        MaxResults=1000
+                    )    
+                    for page in pages:
+                        for reservation in page['Reservations']:
+                            for instance in reservation['Instances']:
+                                try:
+                                    print('Writing s3://{}/{}/{}.json'.format(bucket, prefix, instance['InstanceId']))
+                                    s3.put_object(
+                                        Bucket=bucket,
+                                        Key=prefix+'/'+instance['InstanceId']+'.json',
+                                        Body=json.dumps(instance, default=type_converter),
+                                        ACL='bucket-owner-full-control'
+                                    )
+                                except Exception as e:
+                                    errors = True
+                                    last_error = e
+                                    print('Error writing inventory data: {}'.format(e))
+                    if errors:
+                      raise Exception('Errors encountered, check execution logs. Last exception: {}'.format(last_error))
+                    return {}
+              InputPayload:
+                S3Bucket: '{{S3Bucket}}'
+                S3Prefix: '{{S3Prefix}}'
+
+            description: Calls EC2.DescribeInstances and writes a JSON object for each instance to an S3 bucket. The JSON object contains the instance details retrieved by DescribeInstancs.
+
+  CustomEC2InventoryEvent:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: EventRule to invoke the Custom Inventory Automation
+      Name: Schedule-Trigger-Custom-EC2-Inventory-Automation
+      ScheduleExpression:
+        rate(6 hours)
+      State: ENABLED      
+      Targets:
+      - Arn: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:automation-definition/${CustomEC2Inventory}
+        Id: "RunCustomEc2Inventory"
+        RoleArn: !GetAtt CustomEc2InventoryEventRole.Arn
+        Input: !Sub | 
+          {
+            "AutomationAssumeRole": ["${CustomEC2InventoryRole.Arn}"],
+            "S3Bucket": ["${ResourceSyncS3Bucket}"],
+            "S3Prefix": ["Custom:InstanceInformation/accountid={{global:ACCOUNT_ID}}/region={{global:REGION}}/resourcetype=Ec2InstanceInventory"]
+          }
+
+  CustomEc2InventoryEventRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: ssm-execution
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: ssm:StartAutomationExecution
+                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:automation-definition/${CustomEC2Inventory}:*
+              - Effect: "Allow"
+                Action:
+                  - iam:PassRole
+                Resource: !Sub ${CustomEC2InventoryRole.Arn}
+
+
+  #-------------------------------------------------
+  # The automation execution role that is used to execute the custom EC2 inventory automation
+  #-------------------------------------------------
+  CustomEC2InventoryRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: '/'
+      RoleName: !Sub "custom-ec2-inventory-role-${AWS::Region}"
+      AssumeRolePolicyDocument: 
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ssm.amazonaws.com
+            Action: 'sts:AssumeRole'                
+      Policies:
+        - PolicyName: "ec2-describe-instances"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action: 
+                  - ec2:DescribeInstances
+                  - ec2:DescribeTags
+                Resource: "*"

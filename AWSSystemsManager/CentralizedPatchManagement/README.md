@@ -2,7 +2,7 @@
 
 # Overview
 
-The purpose of this series of CloudFormation templates is to setup a scheduled multi-account and multi-Region (MAMR) patching operation using Systems Manager. In addition to running patching commands on instances, the Systems Manager automation can temporarily any stopped stopped EC2 instances so they can be patched.
+The purpose of this series of CloudFormation templates is to setup a scheduled multi-account and multi-Region (MAMR) patching operation using Systems Manager. In addition to running patching commands on instances, the Systems Manager automation can temporarily any stopped stopped EC2 instances so they can be patched.`
 
 Additionally, Systems Manager Inventory is enabled using a State Manager association. The patching, inventory, and compliance data gathered can then be queried and reported on using Amazon Athena or Amazon QuickSight.
 
@@ -126,7 +126,7 @@ For each targeted instance, the automation document performs the following steps
 5. If the instance is in a stopped state, the automation will (optionally) start the instance and wait for it to check in (online status) with Systems Manager.
 6. The workflow patches the instance using the Run Command document ```AWS-RunPatchBaseline``` with the operation specified from the execution parameters (`Scan` or `Install`)
 7. Results from the Run Command task are sent to the centralized S3 bucket. Patch Compliance data is reported to Patch Manager.
-8. The workflow (optionally) performs an inventory on the instance by creating a temporary State Manager association that executes the run command `AWS-GatherSoftwareInventory` on the instance. Inventory data is written to Systems Manager Inventory within the region.
+8. The workflow (optionally) performs an inventory on the instance by creating a temporary State Manager association that executes the `AWS-GatherSoftwareInventory` policy document on the instance. Inventory data is written to Systems Manager Inventory within the region.
   **Note**: It is recommended that you create State Manager Association for `AWS-GatherSoftwareInventory` in the account to target all instances instead. The approach of creating a temporary association that this workflow uses can affect what inventory data is displayed within the *Inventory* section of the Systems Manager console within the account and region. 
 9.  The workflow checks if the instance was stopped at the beginning of the workflow. If so, it proceeds to stop the instance. 
   **Important:** The workflow has no way to determine if the instance enters active use during the patching. It is assumed that the workflow will run during a maintenance Window where the instance will not be in use. 
