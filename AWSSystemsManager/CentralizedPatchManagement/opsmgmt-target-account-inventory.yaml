@@ -130,140 +130,142 @@ Resources:
         SyncFormat: 'JsonSerDe'
 
   #-------------------------------------------------
-  # Custom EC2 Inventory automation document for gathering details about EC2 instances in the account/region and writing them to an S3 bucket as JSON objects.
+  # Lambda for for gathering details about EC2 instances in the account/region and writing them to an S3 bucket as JSON objects.
   #-------------------------------------------------
-  CustomEC2Inventory:
-    Type: AWS::SSM::Document
+  LambdaEC2CustomInventory:
+    Type: AWS::Lambda::Function
     Properties:
-      DocumentType: Automation
-      Content: 
-        description: | 
-          # Custom EC2 Inventory Sync 
-          This automation captures EC2 instance details and writes them to an S3 bucket as JSON objects. The automation executes a script that calls
-          EC2.DescribeInstances and writes a JSON object for each instance containing its details. The purpose of this automation is to supplement 
-          the data aggregated by Systems Manager Inventory and Resource Data Syncs, which only contains details of managed instances. By writing this
-          data alongside Resource Data Sync data and crawling it, it is possible to identify unmanaged instances and also get a more accurate account
-          of instance status.
-        assumeRole: "{{AutomationAssumeRole}}"
-        schemaVersion: '0.3'
-        parameters:
-          AutomationAssumeRole:
-            type: String  
-          S3Bucket:
-            type: String
-            description: The S3 bucket where EC2 inventory data will be written to.
-          S3Prefix:
-            type: String
-            description: The prefix (path) in the S3 bucket where the EC2 inventory data will be written to.
-        mainSteps:    
-          - name: CheckForSkippedTags
-            action: 'aws:executeScript'
-            inputs:
-              Runtime: python3.7
-              Handler: script_handler
-              Script: |-
-                import boto3
-                import json
-                ec2 = boto3.client('ec2')
-                s3 = boto3.client('s3')
-
-
-                def type_converter(obj):
-                    return str(obj)
-
-                def script_handler(events, context):
-                    bucket=events['S3Bucket']
-                    prefix=events['S3Prefix']
-                    errors =False
-                    
-                    paginator = ec2.get_paginator('describe_instances')
-                    pages = paginator.paginate(
-                        MaxResults=1000
-                    )    
-                    for page in pages:
-                        for reservation in page['Reservations']:
-                            for instance in reservation['Instances']:
-                                try:
-                                    print('Writing s3://{}/{}/{}.json'.format(bucket, prefix, instance['InstanceId']))
-                                    s3.put_object(
-                                        Bucket=bucket,
-                                        Key=prefix+'/'+instance['InstanceId']+'.json',
-                                        Body=json.dumps(instance, default=type_converter),
-                                        ACL='bucket-owner-full-control'
-                                    )
-                                except Exception as e:
-                                    errors = True
-                                    last_error = e
-                                    print('Error writing inventory data: {}'.format(e))
-                    if errors:
-                      raise Exception('Errors encountered, check execution logs. Last exception: {}'.format(last_error))
-                    return {}
-              InputPayload:
-                S3Bucket: '{{S3Bucket}}'
-                S3Prefix: '{{S3Prefix}}'
-
-            description: Calls EC2.DescribeInstances and writes a JSON object for each instance to an S3 bucket. The JSON object contains the instance details retrieved by DescribeInstancs.
-
-  CustomEC2InventoryEvent:
+      Description: Cloudformation Custom Resource function used to register default patch baselines
+      Handler: index.script_handler
+      Role: !GetAtt LambdaCustomEC2InventoryRole.Arn
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import datetime
+          ec2 = boto3.client('ec2')
+          s3 = boto3.client('s3')
+          def type_converter(obj):
+              return str(obj)
+          def script_handler(events, context):
+              bucket=events['S3Bucket']
+              prefix=events['S3Prefix']
+              instance_ids=events.get('InstanceIds', None)
+              errors =False               
+              paginator = ec2.get_paginator('describe_instances')
+              if instance_ids:
+                  pages = paginator.paginate(
+                      InstanceIds=instance_ids
+                  )                
+              else: 
+                  pages = paginator.paginate(
+                      MaxResults=1000
+                  )
+              for page in pages:
+                  for reservation in page['Reservations']:
+                      for instance in reservation['Instances']:
+                          try:
+                              print('Writing s3://{}/{}/{}.json'.format(bucket, prefix, instance['InstanceId']))
+                              instance["CaptureTime"]=datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+                              s3.put_object(
+                                  Bucket=bucket,
+                                  Key=prefix+'/'+instance['InstanceId']+'.json',
+                                  Body=json.dumps(instance, default=type_converter),
+                                  ACL='bucket-owner-full-control'
+                              )
+                          except Exception as e:
+                              errors = True
+                              last_error = e
+                              print('Error writing inventory data: {}'.format(e))
+              if errors:
+                  raise Exception('Errors encountered, check execution logs. Last exception: {}'.format(last_error))
+              return {}
+      Runtime: python3.8
+      Timeout: 600        
+  
+  #-------------------------------------------------
+  # Event rule that triggers a periodic inventory for all instances
+  #-------------------------------------------------
+  CustomEC2InventoryScheduledEventRule:
     Type: AWS::Events::Rule
     Properties:
-      Description: EventRule to invoke the Custom Inventory Automation
-      Name: Schedule-Trigger-Custom-EC2-Inventory-Automation
+      Description: EventRule to invoke the Custom Inventory Lambda
+      Name: Schedule-Trigger-Custom-EC2-Inventory-Lambda
       ScheduleExpression:
         rate(6 hours)
       State: ENABLED      
       Targets:
-      - Arn: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:automation-definition/${CustomEC2Inventory}
+      - Arn: !Sub ${LambdaEC2CustomInventory.Arn}
         Id: "RunCustomEc2Inventory"
-        RoleArn: !GetAtt CustomEc2InventoryEventRole.Arn
         Input: !Sub | 
           {
-            "AutomationAssumeRole": ["${CustomEC2InventoryRole.Arn}"],
             "S3Bucket": ["${ResourceSyncS3Bucket}"],
             "S3Prefix": ["Custom:InstanceInformation/accountid={{global:ACCOUNT_ID}}/region={{global:REGION}}/resourcetype=Ec2InstanceInventory"]
           }
-
-  CustomEc2InventoryEventRole:
-    Type: AWS::IAM::Role
+  PermissionForScheduledEventToInvokeLambda:
+    Type: AWS::Lambda::Permission
     Properties:
-      AssumeRolePolicyDocument:
-        Version: 2012-10-17
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service:
-                - events.amazonaws.com
-            Action: sts:AssumeRole
-      Path: /
-      Policies:
-        - PolicyName: ssm-execution
-          PolicyDocument:
-            Version: 2012-10-17
-            Statement:
-              - Effect: Allow
-                Action: ssm:StartAutomationExecution
-                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:automation-definition/${CustomEC2Inventory}:*
-              - Effect: "Allow"
-                Action:
-                  - iam:PassRole
-                Resource: !Sub ${CustomEC2InventoryRole.Arn}
-
+      FunctionName: !Ref LambdaEC2CustomInventory
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !Sub ${CustomEC2InventoryScheduledEventRule.Arn}
 
   #-------------------------------------------------
-  # The automation execution role that is used to execute the custom EC2 inventory automation
+  # Event rule that triggers inventory on instance state change
   #-------------------------------------------------
-  CustomEC2InventoryRole:
+  CustomEC2InventoryStateChangeEventRule: 
+    Type: AWS::Events::Rule
+    Properties: 
+      Description: "EventRule"
+      EventPattern: 
+        source: 
+          - "aws.ec2"
+        detail-type: 
+          - "EC2 Instance State-change Notification"
+        detail: 
+          state: 
+            - "stopped"
+            - "running"
+            - "terminated"
+      State: "ENABLED"
+      Targets: 
+      - Arn: !Sub ${LambdaEC2CustomInventory.Arn}
+        Id: "RunCustomEc2Inventory"
+        InputTransformer: 
+          InputPathsMap:
+            instanceid: "$.detail.instance-id"
+            state: "$.detail.state"
+          InputTemplate: !Sub | 
+            {
+              "InstanceIds": ["<instanceid>"],
+              "S3Bucket": "${ResourceSyncS3Bucket}",
+              "S3Prefix": "Custom:InstanceInformation/accountid=${AWS::AccountId}/region=${AWS::Region}/resourcetype=Ec2InstanceInventory",
+              "State": "<state>"
+            }
+  PermissionForStateChangeEventRuleToInvokeLambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref LambdaEC2CustomInventory
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !Sub ${CustomEC2InventoryStateChangeEventRule.Arn}            
+
+  #-------------------------------------------------
+  # The Lambda execution role that is used to perform the custom EC2 inventory
+  #-------------------------------------------------
+  LambdaCustomEC2InventoryRole:
     Type: AWS::IAM::Role
     Properties:
       Path: '/'
-      RoleName: !Sub "custom-ec2-inventory-role-${AWS::Region}"
       AssumeRolePolicyDocument: 
         Version: 2012-10-17
         Statement:
           - Effect: Allow
             Principal:
-              Service: ssm.amazonaws.com
-            Action: 'sts:AssumeRole'                
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'   
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole             
       Policies:
         - PolicyName: "ec2-describe-instances"
           PolicyDocument:
