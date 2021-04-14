@@ -82,7 +82,7 @@ In this section, we take a closer look at the following concepts of AWS Systems 
 
 After deploying the `opsmgmt-central-account.yaml` CloudFormation template in the central account, you will have an central account where inventory data is aggregated, as well as a Glue crawler that index inventory data so that it be queries in Athena. 
 
-Deploying the `opsmgmt-target-account-inventory,yml` template into target accounts and regions will setup a Resource Data Sync that sends instance inventory data to the S3 bucket in the central account. Additionally, a State Manager Association will be created to gather software inventory data (applications installed, AWS components, network configuration, etc.). Compliance data will be reported based on the success of gathering of inventory data (Compliant if the operation completed successfully or non-compliant if the resource did not gather inventory successfully).
+Deploying the `opsmgmt-target-account-inventory,yml` template into target accounts and regions will setup a Resource Data Sync that sends instance inventory data to the S3 bucket in the central account. A State Manager Association will be created to gather software inventory data (applications installed, AWS components, network configuration, etc.). Compliance data will be reported based on the success of gathering of inventory data (Compliant if the operation completed successfully or non-compliant if the resource did not gather inventory successfully). Additionally, Event Bridge rules invoke a Lambda function that gathers EC2 instance information and writes it to a `Custom` location in the resource data sync bucket of the target account. This captures both managed and unmanaged EC2 instances, which is useful for identifying instances that aren't managed by Systems Manager as well as getting the instance status (i.e. running, stopped)
 
 Deploying the `opsmgmt-target-account-patching.yaml` template into target accounts and regions will setup default patch baselines for each operating system (these could be customized) and a Systems Manager Automation Document that performs instance patching. The Automation Document will, optionally, automatically start stopped instances, patch them, and then stop them again. Finally, a State Manager Association is created that, by default, executions the patching automation on all instances in the account every Saturday at 11:59 PM. 
 
@@ -249,9 +249,10 @@ Amazon Athena Resources:
 
 AWS Systems Manager Resources:
 
-- AutomationExecutionServiceRole: Automation Execution IAM Service Role
 - ResourceDataSync: Resource Data Sync
 - InventoryAssociation: State Manager Association for ```AWS-GatherSoftwareInventory```
+- EC2 Custom Inventory Lambda Function: Collects details of EC2 instances ans writes them to the same S3 bucket as Resource Data Sync. 
+- EventBridge Rules: One rule runs every 6 hours. Another rule runs on instance state change (i.e. stopped, running, terminated). Both rules invoke the EC2 Custom Inventory Lambda Function
 
 ### Resources created by opsmgmt-target-account-patching.yaml
 
