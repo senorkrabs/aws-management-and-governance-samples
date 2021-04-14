@@ -1,5 +1,16 @@
 # Operational Management: Inventory, Patching, and Compliance
 
+# TODO
+[] Changes to inventory 
+
+[] Template for attaching instance profile and policies to existing profiles
+
+[] Additional sample Athena queries for inventory and patch reporting
+
+[] Update documentation screenshots, verify instructions
+
+[] Test inventory behavior with/without performing inventory during patching
+
 # Overview
 
 The purpose of this series of CloudFormation templates is to setup a scheduled multi-account and multi-Region (MAMR) patching operation using Systems Manager. In addition to running patching commands on instances, the Systems Manager automation can temporarily any stopped stopped EC2 instances so they can be patched.`
@@ -9,6 +20,7 @@ Additionally, Systems Manager Inventory is enabled using a State Manager associa
 # Table of Contents
 
 - [Operational Management: Inventory, Patching, and Compliance](#operational-management-inventory-patching-and-compliance)
+- [TODO](#todo)
 - [Overview](#overview)
 - [Table of Contents](#table-of-contents)
 - [Service Concepts](#service-concepts)
