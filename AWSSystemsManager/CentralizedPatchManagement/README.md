@@ -1,15 +1,16 @@
 # Operational Management: Inventory, Patching, and Compliance
 
 # TODO
-[] Changes to inventory 
 
-[] Template for attaching instance profile and policies to existing profiles
+[] Add an additional template for attaching policies to existing instance profiles (this can currently be done using SSM QuickSetup but a template can be provided here for convenience)
 
-[] Additional sample Athena queries for inventory and patch reporting
+[] Additional sample Athena queries for inventory and patch reporting, including queries that can identify EC2 instances that aren't currently inventoried in Systems Manager
 
-[] Update documentation screenshots, verify instructions
+[] Update documentation screenshots - Most of the instructions have been updated but there may be additional edits and cleanup
 
-[] Test inventory behavior with/without performing inventory during patching
+[] Test inventory behavior with/without performing inventory during patching. Confirm if inventory consistently runs without creating an association and executing it in the automation.
+
+[] Support for On-demand patching across multiple accounts and regions - currently the patching is done on a cron-based schedule
 
 # Overview
 
