@@ -1,15 +1,15 @@
 # Operational Management: Inventory, Patching, and Compliance
 
 # TODO
-[] Changes to inventory 
+[ ] Changes to inventory 
 
-[] Template for attaching instance profile and policies to existing profiles
+[ ] Template for attaching instance profile and policies to existing profiles
 
-[] Additional sample Athena queries for inventory and patch reporting
+[ ] Additional sample Athena queries for inventory and patch reporting
 
-[] Update documentation screenshots, verify instructions
+[ ] Update documentation screenshots, verify instructions
 
-[] Test inventory behavior with/without performing inventory during patching
+[ ] Test inventory behavior with/without performing inventory during patching
 
 # Overview
 

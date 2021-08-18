@@ -83,6 +83,24 @@ Parameters:
     AllowedPattern: ^([1-9][0-9]*|[1-9][0-9]%|[1-9]%|100%)$
     Description: The maximum number of instances in the account/region to apply the automation to concurrently. Can be a percentage or a number. Adjust this number if any throttling errors occur.
     Default:  100
+  CreateImageBeforePatching:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: When set to true, an Amazon Machine Image (AMI) will be created prior to each patch install operation. 
+  PrunePatchingImages:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: When set to true, an EventBridge scheduled rule will be created that cleans up older Amazon Machine Images (AMIs) that were created during patching. The rule triggers a cleanup Lambda and will run daily.
+  PruneImagesMaxAge:
+    Type: Number
+    Default: 30
+    Description: The maximum time (in days) to retain an Amazon Machine Image (AMI) created during patching. Older AMIs will only be pruned if older than the number of days specified AND if image pruning has been enabled.
   GatherInventory:
     Type: String
     Default: 'false'
@@ -134,8 +152,10 @@ Metadata:
           - GatherInventory
           - AutoAttachInstanceProfile
           - PatchingTimeoutSeconds
-          - PatchingAttempts
+          - PatchingAttempts          
           - InstanceOnlineTimeoutSeconds
+          - CreateImageDuringPatching
+          - PatchingMaxConcurrency
       - 
         Label: 
           default: "Default Patch Baselines"
@@ -146,6 +166,7 @@ Metadata:
 Conditions:
   AutoAttachInstanceProfile: !Equals [!Ref AutoAttachInstanceProfile, 'Enabled']
   DeployDefaultPatchBaselines: !Equals [!Ref DeployDefaultPatchBaselines, 'Enabled']
+  PruneImages: !And [!Equals [!Ref PrunePatchingImages, 'true'], !Equals [!Ref CreateImageBeforePatching, 'true']]
 
 
 Resources:
@@ -538,6 +559,12 @@ Resources:
             type: String
             default: ''
             description: (Optional) The path in the S3 bucket to send patching execution logs to.
+          CreateImage:
+            type: String
+            default: 'false'
+            allowedValues: 
+              - 'true'
+              - 'false'
           InventoryOutputS3BucketName:
             type: String
             default: ''
@@ -711,9 +738,9 @@ Resources:
               Runtime: python3.6
               Handler: script_handler
               Script: |-
-                import datetime
+                from datetime import datetime, timezone
                 def script_handler(events, context):
-                  return {'datetime': str(datetime.datetime.now())}
+                  return {'datetime': datetime.now(timezone.utc).astimezone().isoformat()}
             outputs:
               - Name: Datetime
                 Selector: $.Payload.datetime
@@ -813,6 +840,45 @@ Resources:
             onCancel: 'step:choiceStopInstance'
             isCritical: true
             description: Verify the instance is online and managed by SSM prior to patching. 
+          - name: choiceCreateImage
+            action: 'aws:branch'
+            inputs:
+              Choices:
+                - And:
+                  - Variable: '{{CreateImage}}'
+                    EqualsIgnoreCase: 'true'
+                  - Variable: '{{PatchingOperation}}'
+                    EqualsIgnoreCase: 'install'
+                  NextStep: CreateImage
+              Default: choicePatchInstanceLogToS3
+            onFailure: 'step:choiceStopInstance'
+            onCancel: 'step:choiceStopInstance'
+            description: If CreateAMI is set, an AMI of the EC2 instance will be captured before patching.    
+          - name: CreateImage   
+            action: 'aws:createImage'
+            maxAttempts: 3
+            onFailure: 'step:choiceStopInstance'
+            onCancel: 'step:choiceStopInstance'            
+            isCritical: true
+            inputs:
+              InstanceId: '{{InstanceId}}'
+              ImageName: 'Pre-patch image of {{InstanceId}} on {{global:DATE_TIME}}'
+            description: 'Captures an Amazon Machine Image prior to patching the instance'
+          - name: TagImage
+            action: aws:createTags
+            maxAttempts: 3
+            onFailure: 'step:choiceStopInstance'
+            onCancel: 'step:choiceStopInstance'            
+            isCritical: true
+            inputs: 
+              ResourceType: EC2
+              ResourceIds:
+                - '{{CreateImage.ImageId}}'
+              Tags:
+                - Key: instance-id
+                  Value: '{{InstanceId}}'
+                - Key: patching-timestamp
+                  Value: '{{GetDatetime.Datetime}}'
           - name: choicePatchInstanceLogToS3
             action: 'aws:branch'
             inputs:
@@ -824,6 +890,8 @@ Resources:
                       StringEquals: ''
                   NextStep: PatchInstance
               Default: PatchInstanceLogToS3
+            onFailure: Continue
+            onCancel: 'step:choiceStopInstance'              
             description: 'If PatchingOutputS3BucketName and PatchingOutputS3KeyPrefix are set, go to step that starts patching with execution logs sent to an S3 bucket. Otherwise, go to step that starts patching without sending execution logs to S3.'
           - name: PatchInstanceLogToS3
             action: 'aws:runCommand'
@@ -843,7 +911,7 @@ Resources:
             onFailure: Continue
             isCritical: true
             onCancel: 'step:choiceStopInstance'
-            description: Execute AWS-RunPatchBasline and send execution logs to S3.
+            description: Execute AWS-RunPatchBaseline and send execution logs to S3.
           - name: PatchInstance
             action: 'aws:runCommand'
             inputs:
@@ -1137,9 +1205,11 @@ Resources:
             Statement:
               - Effect: "Allow"
                 Action: 
+                  - ec2:CreateImage                
                   - ec2:CreateTags 
                   - ec2:DeleteTags
                   - ec2:DescribeTags
+                  - ec2:DescribeImages
                   - ec2:DescribeInstances
                   - ec2:DescribeInstanceStatus
                   - ec2:StopInstances
@@ -1203,6 +1273,8 @@ Resources:
           - !Sub ${InventoryExecutionLogsS3BucketPrefix}/accountid={{global:ACCOUNT_ID}}/region={{global:REGION}}/executionid={{automation:EXECUTION_ID}}        
         PatchingTimeoutSeconds: 
           - !Sub ${PatchingTimeoutSeconds}
+        CreateImage:
+          - !Sub ${CreateImageBeforePatching}
         GatherInventory: 
           - !Sub ${GatherInventory}
         StartInstance: 
@@ -1282,6 +1354,119 @@ Resources:
       InstanceProfileName: !Ref PatchingInstanceProfileRole
       Roles:
         - !Ref PatchingInstanceProfileRole                
+
+  #-------------------------------------------------
+  # Pre-patching AMI pruning
+  #-------------------------------------------------
+
+  #-------------------------------------------------
+  # The Lambda execution role that is used to prune EC2 images and snapshots
+  #-------------------------------------------------
+  PatchPruningLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: '/'
+      AssumeRolePolicyDocument: 
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'   
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole             
+      Policies:
+        - PolicyName: "ec2-describe-instances"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action: 
+                  - ec2:DescribeImages
+                  - ec2:DescribeSnapshots
+                  - ec2:DeleteSnapshot
+                  - ec2:DeregisterImage
+                Resource: "*"
+  #-------------------------------------------------
+  # Lambda for pruning AMIs and snapshots that were created during patching. 
+  #-------------------------------------------------
+  PatchImagePruningLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Prunes AMIs and snapshots that were created during patching.
+      Handler: index.script_handler
+      Role: !GetAtt PatchPruningLambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import datetime
+          ec2 = boto3.client('ec2')
+          s3 = boto3.client('s3')
+          def type_converter(obj):
+              return str(obj)
+          def script_handler(events, context):
+              bucket=events['S3Bucket']
+              prefix=events['S3Prefix']
+              instance_ids=events.get('InstanceIds', None)
+              errors =False               
+              paginator = ec2.get_paginator('describe_instances')
+              if instance_ids:
+                  pages = paginator.paginate(
+                      InstanceIds=instance_ids
+                  )                
+              else: 
+                  pages = paginator.paginate(
+                      MaxResults=1000
+                  )
+              for page in pages:
+                  for reservation in page['Reservations']:
+                      for instance in reservation['Instances']:
+                          try:
+                              print('Writing s3://{}/{}/{}.json'.format(bucket, prefix, instance['InstanceId']))
+                              instance["CaptureTime"]=datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+                              s3.put_object(
+                                  Bucket=bucket,
+                                  Key=prefix+'/'+instance['InstanceId']+'.json',
+                                  Body=json.dumps(instance, default=type_converter),
+                                  ACL='bucket-owner-full-control'
+                              )
+                          except Exception as e:
+                              errors = True
+                              last_error = e
+                              print('Error writing inventory data: {}'.format(e))
+              if errors:
+                  raise Exception('Errors encountered, check execution logs. Last exception: {}'.format(last_error))
+              return {}
+      Runtime: python3.8
+      Timeout: 600        
+  #-------------------------------------------------
+  # Event rule that triggers a periodic image pruning
+  #-------------------------------------------------
+  PatchImagePruningEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: EventRule to invoke the Custom Inventory Lambda
+      Name: Schedule-Trigger-ImagePruning
+      ScheduleExpression:
+        rate(6 hours)
+      State: ENABLED      
+      Targets:
+      - Arn: !Sub ${PatchImagePruningLambda.Arn}
+        Id: "PatchImagePruning"
+        Input: !Sub | 
+          {
+            "retain_days": ${PruneImagesMaxAge}
+          }
+  PermissionForScheduledEventToInvokeLambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref PatchImagePruningLambda
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !Sub ${PatchImagePruningEventRule.Arn}
+  
+
 
 Outputs:
   StackArn:
