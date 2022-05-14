@@ -789,7 +789,7 @@ Resources:
                         Variable: '{{AttachInstanceProfileArn}}'
                         StringEquals: ''
                   NextStep: AssociateInstanceProfile
-              Default: choiceStartInstance
+              Default: choiceCreateImage
           - name: AssociateInstanceProfile
             action: 'aws:executeAwsApi'
             inputs:
@@ -802,8 +802,87 @@ Resources:
               - Name: AssociationId
                 Selector: $.IamInstanceProfileAssociation.AssociationId              
             isCritical: false
-            onFailure: 'step:choiceStartInstance'
-            nextStep: choiceStartInstance
+            onFailure: 'step:choiceCreateImage'
+          - name: choiceCreateImage
+            action: 'aws:branch'
+            inputs:
+              Choices:
+                - And:
+                  - Variable: '{{CreateImage}}'
+                    EqualsIgnoreCase: 'true'
+                  - Variable: '{{PatchingOperation}}'
+                    EqualsIgnoreCase: 'install'
+                  NextStep: CreateImage
+              Default: choiceStartInstance
+            onFailure: 'step:choiceStopInstance'
+            onCancel: 'step:choiceStopInstance'
+            description: If CreateAMI is set, an AMI of the EC2 instance will be captured before patching. 
+          - name: CreateImage
+            action: 'aws:executeAwsApi'
+            inputs: 
+              Service: ec2
+              Api: CreateImage
+              InstanceId: '{{InstanceId}}'
+              Name: 'Pre-patch image of {{InstanceId}} on {{global:DATE_TIME}}'
+              TagSpecifications:
+                - ResourceType: image
+                  Tags:
+                    - Key: instance-id
+                      Value: '{{InstanceId}}'
+                    - Key: patching-timestamp
+                      Value: '{{GetDatetime.Datetime}}'
+                - ResourceType: snapshot
+                  Tags:
+                    - Key: instance-id
+                      Value: '{{InstanceId}}'
+                    - Key: patching-timestamp
+                      Value: '{{GetDatetime.Datetime}}'                        
+              NoReboot: True
+            outputs: 
+              - Name: ImageId
+                Selector: $.ImageId
+                Type: String
+            onFailure: 'step:choiceStopInstance'
+            onCancel: 'step:choiceStopInstance'            
+            isCritical: true             
+            description: 'Captures an Amazon Machine Image prior to patching the instance. Uses aws:executeApi so that tags can be applied to both AMI and snapshots during creation'   
+          - name: waitDescribeImages
+            action: 'aws:waitForAwsResourceProperty'
+            inputs:
+              Service: ec2
+              Api: DescribeImages             
+              ImageIds:
+                - '{{CreateImage.ImageId}}'
+              Owners: 
+                - 'self'
+              PropertySelector: '$.Images[0].State'
+              DesiredValues:
+                - available
+                - failed
+                - invalid
+                - error
+            description: Waits for DescribeImages to produce a result that isn't "pending" to indicate image creation has finished (either succesfully or unsuccessfuly)
+            timeoutSeconds: 1800
+            onFailure: 'step:choiceStopInstance'
+            onCancel: 'step:choiceStopInstance'            
+            isCritical: true
+          - name: assertCreateImageSuccess
+            action: 'aws:assertAwsResourceProperty'
+            inputs:
+              Service: ec2
+              Api: DescribeImages             
+              ImageIds:
+                - '{{CreateImage.ImageId}}'
+              Owners: 
+                - 'self'
+              PropertySelector: '$.Images[0].State'
+              DesiredValues:
+                - available
+            description: Asserts that the image was created successfully and is available.
+            timeoutSeconds: 30
+            onFailure: 'step:choiceStopInstance'
+            onCancel: 'step:choiceStopInstance'
+            isCritical: true             
           - name: choiceStartInstance
             action: 'aws:branch'
             inputs:
@@ -840,45 +919,32 @@ Resources:
             onCancel: 'step:choiceStopInstance'
             isCritical: true
             description: Verify the instance is online and managed by SSM prior to patching. 
-          - name: choiceCreateImage
-            action: 'aws:branch'
-            inputs:
-              Choices:
-                - And:
-                  - Variable: '{{CreateImage}}'
-                    EqualsIgnoreCase: 'true'
-                  - Variable: '{{PatchingOperation}}'
-                    EqualsIgnoreCase: 'install'
-                  NextStep: CreateImage
-              Default: choicePatchInstanceLogToS3
-            onFailure: 'step:choiceStopInstance'
-            onCancel: 'step:choiceStopInstance'
-            description: If CreateAMI is set, an AMI of the EC2 instance will be captured before patching.    
-          - name: CreateImage   
-            action: 'aws:createImage'
-            maxAttempts: 3
-            onFailure: 'step:choiceStopInstance'
-            onCancel: 'step:choiceStopInstance'            
-            isCritical: true
-            inputs:
-              InstanceId: '{{InstanceId}}'
-              ImageName: 'Pre-patch image of {{InstanceId}} on {{global:DATE_TIME}}'
-            description: 'Captures an Amazon Machine Image prior to patching the instance'
-          - name: TagImage
-            action: aws:createTags
-            maxAttempts: 3
-            onFailure: 'step:choiceStopInstance'
-            onCancel: 'step:choiceStopInstance'            
-            isCritical: true
-            inputs: 
-              ResourceType: EC2
-              ResourceIds:
-                - '{{CreateImage.ImageId}}'
-              Tags:
-                - Key: instance-id
-                  Value: '{{InstanceId}}'
-                - Key: patching-timestamp
-                  Value: '{{GetDatetime.Datetime}}'
+
+          # - name: CreateImage   
+          #   action: 'aws:createImage'
+          #   maxAttempts: 3
+          #   onFailure: 'step:choiceStopInstance'
+          #   onCancel: 'step:choiceStopInstance'            
+          #   isCritical: true
+          #   inputs:
+          #     InstanceId: '{{InstanceId}}'
+          #     ImageName: 'Pre-patch image of {{InstanceId}} on {{global:DATE_TIME}}'
+          #   description: 'Captures an Amazon Machine Image prior to patching the instance'
+          # - name: TagImage
+          #   action: aws:createTags
+          #   maxAttempts: 3
+          #   onFailure: 'step:choiceStopInstance'
+          #   onCancel: 'step:choiceStopInstance'            
+          #   isCritical: true
+          #   inputs: 
+          #     ResourceType: EC2
+          #     ResourceIds:
+          #       - '{{CreateImage.ImageId}}'
+          #     Tags:
+          #       - Key: instance-id
+          #         Value: '{{InstanceId}}'
+          #       - Key: patching-timestamp
+          #         Value: '{{GetDatetime.Datetime}}'
           - name: choicePatchInstanceLogToS3
             action: 'aws:branch'
             inputs:
@@ -1376,7 +1442,7 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole             
       Policies:
-        - PolicyName: "ec2-describe-instances"
+        - PolicyName: "ec2-manage-patching-images"
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
@@ -1384,66 +1450,111 @@ Resources:
                 Action: 
                   - ec2:DescribeImages
                   - ec2:DescribeSnapshots
+                Resource: "*"
+              - Effect: "Allow"
+                Action: 
+                  - ec2:DescribeImages
+                  - ec2:DescribeSnapshots
                   - ec2:DeleteSnapshot
                   - ec2:DeregisterImage
                 Resource: "*"
+                Condition: 
+                  "Null":
+                    "aws:ResourceTag/patching-timestamp": "false"                    
   #-------------------------------------------------
   # Lambda for pruning AMIs and snapshots that were created during patching. 
   #-------------------------------------------------
   PatchImagePruningLambda:
+    Condition: PruneImages
     Type: AWS::Lambda::Function
     Properties:
       Description: Prunes AMIs and snapshots that were created during patching.
-      Handler: index.script_handler
+      Handler: index.lambda_handler
       Role: !GetAtt PatchPruningLambdaExecutionRole.Arn
       Code:
         ZipFile: |
           import boto3
-          import json
-          import datetime
-          ec2 = boto3.client('ec2')
-          s3 = boto3.client('s3')
-          def type_converter(obj):
-              return str(obj)
-          def script_handler(events, context):
-              bucket=events['S3Bucket']
-              prefix=events['S3Prefix']
-              instance_ids=events.get('InstanceIds', None)
-              errors =False               
-              paginator = ec2.get_paginator('describe_instances')
-              if instance_ids:
-                  pages = paginator.paginate(
-                      InstanceIds=instance_ids
-                  )                
-              else: 
-                  pages = paginator.paginate(
-                      MaxResults=1000
-                  )
-              for page in pages:
-                  for reservation in page['Reservations']:
-                      for instance in reservation['Instances']:
-                          try:
-                              print('Writing s3://{}/{}/{}.json'.format(bucket, prefix, instance['InstanceId']))
-                              instance["CaptureTime"]=datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
-                              s3.put_object(
-                                  Bucket=bucket,
-                                  Key=prefix+'/'+instance['InstanceId']+'.json',
-                                  Body=json.dumps(instance, default=type_converter),
-                                  ACL='bucket-owner-full-control'
-                              )
-                          except Exception as e:
-                              errors = True
-                              last_error = e
-                              print('Error writing inventory data: {}'.format(e))
-              if errors:
-                  raise Exception('Errors encountered, check execution logs. Last exception: {}'.format(last_error))
-              return {}
+          import logging
+          from datetime import datetime, timedelta, timezone, tzinfo
+          logging.basicConfig(level='INFO')
+          log = logging.getLogger()
+          log.setLevel(logging.INFO)
+
+          ec2_client = boto3.client('ec2')
+
+          def lambda_handler(event, context):
+              retain_days = event.get('retain_days', None)
+              dt = datetime.now(timezone.utc).astimezone()
+              log.info(f"Current timestamp: {dt.isoformat()}")
+              dt_delete = dt - timedelta(days=int(retain_days))
+              log.info(f"Deletion timestamp: {dt_delete.isoformat()}")
+              ami_list = ec2_client.describe_images(
+                  Owners=['self'],
+                  Filters=[
+                      {
+                          'Name': 'tag-key',
+                          'Values': ['patching-timestamp']
+                      }
+                  ]
+              )
+              log.debug(ami_list)
+              if len(ami_list.get('Images', [])) == 0:
+                  log.info("No patching AMIs were returned.")
+                  return {}
+              for ami in ami_list['Images']:
+                  try:
+                      snapshots = []
+                      log.info(f'AMI: {ami["ImageId"]}')
+                      patching_timestamp = [tag['Value'] for tag in ami['Tags'] if tag['Key'] == 'patching-timestamp'][0]
+                      patching_timestamp = datetime.fromisoformat(patching_timestamp)
+                      if patching_timestamp.tzinfo is None:
+                          patching_timestamp = patching_timestamp.replace(tzinfo=timezone.utc).astimezone()
+                      log.info(f'patching-timestamp: {patching_timestamp}')
+                      if patching_timestamp < dt_delete:
+                          log.info (f'AMI {ami["ImageId"]} will be de-registered')
+                          snapshots = [block_device_mapping.get("Ebs",{}).get("SnapshotId", None) for block_device_mapping in ami["BlockDeviceMappings"]]
+                          log.info(f'Snapshots to delete: {snapshots}')
+                          log.info(f'De-registering AMI {ami["ImageId"]}')
+                          ec2_client.deregister_image(ImageId=ami["ImageId"])
+                          for snapshot in snapshots:
+                              try:
+                                  log.info (f'Deleting AMI snapshot {snapshot}')
+                                  ec2_client.delete_snapshot(SnapshotId=snapshot)
+                              except Exception as ex:
+                                  log.exception(ex)                  
+                  except Exception as ex:        
+                      log.exception(ex)
+              # Attempt to cleanup any orphaned patching snapshots
+              paginated_snaps = ec2_client.get_paginator('describe_snapshots').paginate(
+                  Filters=[
+                      {
+                          'Name': 'tag-key',
+                          'Values': ['patching-timestamp']
+                      }
+                  ]
+              )
+              for page in paginated_snaps:
+                  for snapshot in page['Snapshots']:
+                      try: 
+                          log.info(snapshot)
+                          log.debug(f'Snapshot: {snapshot["SnapshotId"]}')
+                          patching_timestamp = [tag['Value'] for tag in snapshot['Tags'] if tag['Key'] == 'patching-timestamp'][0]
+                          patching_timestamp = datetime.fromisoformat(patching_timestamp)        
+                          if patching_timestamp.tzinfo is None:
+                              patching_timestamp = patching_timestamp.replace(tzinfo=timezone.utc).astimezone()
+                          log.info(f'patching-timestamp: {patching_timestamp}')
+                          if patching_timestamp < dt_delete:
+                              log.info (f'Deleting AMI snapshot {snapshot["SnapshotId"]}')
+                              ec2_client.delete_snapshot(SnapshotId=snapshot["SnapshotId"])                                        
+                      except Exception as ex:        
+                          log.exception(ex)
       Runtime: python3.8
       Timeout: 600        
   #-------------------------------------------------
   # Event rule that triggers a periodic image pruning
   #-------------------------------------------------
   PatchImagePruningEventRule:
+    Condition: PruneImages
     Type: AWS::Events::Rule
     Properties:
       Description: EventRule to invoke the Custom Inventory Lambda
@@ -1459,6 +1570,7 @@ Resources:
             "retain_days": ${PruneImagesMaxAge}
           }
   PermissionForScheduledEventToInvokeLambda:
+    Condition: PruneImages
     Type: AWS::Lambda::Permission
     Properties:
       FunctionName: !Ref PatchImagePruningLambda

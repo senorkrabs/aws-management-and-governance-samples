@@ -133,13 +133,17 @@ Resources:
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
-              KMSMasterKeyID: !Ref ManagedInstanceDataEncryptionKey
+              KMSMasterKeyID: !GetAtt ManagedInstanceDataEncryptionKey.Arn
               SSEAlgorithm: aws:kms
+            BucketKeyEnabled: True
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced          
       Tags:
         - Key: !Ref TagName
           Value: !Ref TagValue
@@ -152,6 +156,7 @@ Resources:
     Properties:
       Bucket: !Ref ResouceSyncBucket
       PolicyDocument:
+        Version: "2012-10-17"
         Statement:
         - Sid: SSMBucketPermissionsCheck
           Effect: Allow
@@ -174,8 +179,8 @@ Resources:
         - Sid: SSMWrite
           Effect: Allow
           Principal: "*"
-          Action: s3:PutObject
-          Resource: !Sub arn:aws:s3:::${ResouceSyncBucket}/*
+          Action: [s3:PutObject, s3:PutObjectAcl]
+          Resource: !Sub arn:aws:s3:::${ResouceSyncBucket}/*/accountid=${!aws:PrincipalAccount}/*
           Condition:
             StringEquals:
               aws:PrincipalOrgID: !Ref OrganizationId
@@ -200,11 +205,15 @@ Resources:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: AES256
+            BucketKeyEnabled: True
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced        
       Tags:
         - Key: !Ref TagName
           Value: !Ref TagValue
@@ -217,6 +226,7 @@ Resources:
     Properties:
       Bucket: !Ref ExecutionLogsBucket
       PolicyDocument:
+        Version: "2012-10-17"      
         Statement:
         - Sid: SSMWrite
           Effect: Allow

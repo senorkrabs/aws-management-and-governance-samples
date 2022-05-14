@@ -170,8 +170,7 @@ Resources:
                               s3.put_object(
                                   Bucket=bucket,
                                   Key=prefix+'/'+instance['InstanceId']+'.json',
-                                  Body=json.dumps(instance, default=type_converter),
-                                  ACL='bucket-owner-full-control'
+                                  Body=json.dumps(instance, default=type_converter)
                               )
                           except Exception as e:
                               errors = True
@@ -199,8 +198,8 @@ Resources:
         Id: "RunCustomEc2Inventory"
         Input: !Sub | 
           {
-            "S3Bucket": ["${ResourceSyncS3Bucket}"],
-            "S3Prefix": ["Custom:InstanceInformation/accountid={{global:ACCOUNT_ID}}/region={{global:REGION}}/resourcetype=Ec2InstanceInventory"]
+            "S3Bucket": "${ResourceSyncS3Bucket}",
+            "S3Prefix": "Custom:InstanceInformation/accountid=${AWS::AccountId}/region=${AWS::Region}/resourcetype=Ec2InstanceInventory"
           }
   PermissionForScheduledEventToInvokeLambda:
     Type: AWS::Lambda::Permission
@@ -276,3 +275,23 @@ Resources:
                   - ec2:DescribeInstances
                   - ec2:DescribeTags
                 Resource: "*"
+
+        - PolicyName: "kms-encrypt"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action: 
+                  - kms:Encrypt
+                  - kms:GenerateDataKey*
+                Resource: !Sub "${ManagedInstanceDataEncryptionKey}"
+
+        - PolicyName: "s3-put"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action: 
+                  - s3:PutObject
+                  - s3:PutObjectAcl
+                Resource: !Sub "arn:aws:s3:::${ResourceSyncS3Bucket}/Custom:InstanceInformation/accountid=${AWS::AccountId}/region=${AWS::Region}/resourcetype=Ec2InstanceInventory/*"
