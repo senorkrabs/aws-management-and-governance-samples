@@ -105,7 +105,9 @@ Resources:
           Principal: "*"
           Action:
             - kms:Encrypt
-            - kms:GenerateDataKey
+            - kms:GenerateDataKey*
+            - kms:ReEncrypt
+            - kms:DescribeKey           
           Resource: '*'
           Condition:
             StringEquals:
